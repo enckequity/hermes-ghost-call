@@ -141,6 +141,10 @@ python -m venv .venv; .venv\Scripts\pip install -e . -r requirements-dev.txt
 .venv\Scripts\python scripts\dev_demo.py 'book a table Friday 8pm for 4, budget $80, name Winch'
 ```
 
+Ready-made scenarios: `scripts/dev_demo.py isp` (haggle with the internet provider for a
+discount) and `scripts/dev_demo.py table`. Each prints a cheat sheet for whoever plays the other
+party; the full scripts are in [docs/DEMO.md](docs/DEMO.md).
+
 Single quotes keep the shell from expanding `$80`. If `OPENAI_API_KEY` is not set, the demo asks
 for it with hidden input, so the key never lands on screen or in shell history.
 

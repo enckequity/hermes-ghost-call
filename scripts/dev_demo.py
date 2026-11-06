@@ -1,6 +1,7 @@
 """Local web demo without Hermes: the bridge plus a terminal "chat" that shows the ticker.
 
-    python scripts/dev_demo.py "book a table Friday 8pm for 4, budget $80, name Winch"
+    python scripts/dev_demo.py 'book a table Friday 8pm for 4, budget $80, name Winch'
+    python scripts/dev_demo.py isp      # ready-made scenario: haggle with the internet provider
 
 It starts the bridge on PUBLIC_BASE_URL's port (default http://localhost:8766), creates one ghost
 session through the same service the plugin uses, prints the You/Them links, and prints every
@@ -19,6 +20,26 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+
+# Ready-made demo calls: ``python scripts/dev_demo.py isp``. Each brief is the cheat sheet for
+# the person playing the other party (see docs/DEMO.md for the full talking tracks).
+SCENARIOS = {
+    "table": {
+        "goal": "book a table Friday 8pm for 4, budget $80, name Winch",
+        "brief": "Scenario: book a table. The other party plays the restaurant: Friday is full, "
+                 "only Saturday; the set menu is $95; ask for a name.",
+    },
+    "isp": {
+        "goal": "get a lower price on my home internet. I pay $89/month for 500 Mbps, customer "
+                "4 years, contract ended in October. FastNet offers 1 Gbps at $55/month for 12 "
+                "months. Target $60/month or less, no new contract. Walk away: cancel and "
+                "switch. Name Winch, account 4471 with Northwind Fiber retention",
+        "brief": "Scenario: haggle with the internet provider. The other party plays Northwind "
+                 "Fiber support: open at $79 on a 2-year contract, then $70 for 6 months, "
+                 "move to retention, finally $60 for 12 months with no contract, plus a $10 "
+                 "router fee if the caller does not ask.",
+    },
+}
 
 
 class TerminalMessage:
@@ -54,13 +75,19 @@ def main() -> int:
     for stream in (sys.stdout, sys.stderr):  # Windows consoles default to cp1252
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
-    goal = " ".join(sys.argv[1:]) or "book a table Friday 8pm for 4, budget $80, name Winch"
+    args = sys.argv[1:]
+    scenario = SCENARIOS.get(args[0].lower()) if len(args) == 1 else None
+    goal = scenario["goal"] if scenario else " ".join(args) or SCENARIOS["table"]["goal"]
+    if scenario:
+        print(scenario["brief"], flush=True)
     os.environ.setdefault("PUBLIC_BASE_URL", "http://localhost:8766")
     os.environ.setdefault("HERMES_GHOST_DB", str(Path(tempfile.gettempdir()) /
                                                  "hermes-ghost-demo.db"))
     os.environ.setdefault("HERMES_GHOST_BRIDGE_PORT",
                           os.environ["PUBLIC_BASE_URL"].rsplit(":", 1)[-1].strip("/") or "8766")
-    if not os.environ.get("OPENAI_API_KEY", "").strip() and sys.stdin.isatty():
+    # Both ends must be a terminal: on Windows a redirected NUL stdin still reports isatty().
+    if not os.environ.get("OPENAI_API_KEY", "").strip() and sys.stdin.isatty() \
+            and sys.stdout.isatty():
         import getpass  # hidden input: the key never shows on screen or in shell history
 
         key = getpass.getpass("OpenAI API key (paste, hidden; Enter to skip): ").strip()

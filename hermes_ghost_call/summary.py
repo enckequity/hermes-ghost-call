@@ -27,7 +27,8 @@ SUMMARY_PROMPT = (
     '  "outcome": one of "agreed", "partial", "not_agreed", "unclear"\n'
     '  "agreed": one short sentence of what was actually agreed, or ""\n'
     '  "date": the agreed date/time as said, or ""\n'
-    '  "amount": the agreed price/amount/budget as said, or ""\n'
+    '  "amount": the agreed price/amount/budget as said, with its term if one was said '
+    '(e.g. "$60/month for 12 months, no contract"), or ""\n'
     '  "open_questions": a list of at most 3 short open items still unresolved\n'
     '  "follow_up_sms": a short SMS (under 200 characters) the user could send the other '
     "party to confirm what was agreed, signed with the user's name if known, or \"\"\n"

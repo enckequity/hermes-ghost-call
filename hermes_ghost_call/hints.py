@@ -48,7 +48,8 @@ _BANNED = ("did you see", "did you hear", "confirm you heard", "let me know", "w
            "should i", "want me to", "do you want", "are you there", "can you confirm",
            "approve", "reply with", "yes/no")
 _ACTION_HINT = re.compile(r"\b(ask|say|offer|tell|mention|confirm|check|propose|counter|"
-                          r"request|push|insist|decline|accept|repeat)\b", re.IGNORECASE)
+                          r"request|push|insist|decline|accept|repeat|hold|cite|anchor)\b",
+                          re.IGNORECASE)
 _LEADING_MARKUP = re.compile(r"^\s*(?:[-*•>#]+|\d+[.)])\s*")
 _LABEL = re.compile(r"^\s*(?:hint|ghost|tip|suggestion|answer)\s*[:\-—]\s*", re.IGNORECASE)
 
@@ -197,6 +198,12 @@ SYSTEM_PROMPT = (
     "  they said Saturday only → offer Friday 19:30 or Sunday\n"
     "  $95 is over budget → ask for the set menu or a smaller table\n"
     "  they asked for a name → say Winch\n"
+    "  $70 is still over your target → mention the competitor's lower offer\n"
+    "  they want a 2-year contract → decline, you want no contract\n"
+    "When the goal is to bargain (a discount, a lower bill, a refund): never accept the first "
+    "offer; anchor with the user's competitor offer or loyalty; never reveal the user's target "
+    "or walk-away price to them; before agreeing, check how long a promo lasts, the price after "
+    "it, fees and contract terms; once agreed, ask for a confirmation number.\n"
     "Rules: one action or one fact. No greetings, no lists, no markdown, no quotes, no "
     "options menus, never ask the user a question and never ask them to confirm anything. "
     "If something the other party asked for is missing, say it once as a fact (they asked X "
