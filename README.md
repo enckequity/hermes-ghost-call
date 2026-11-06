@@ -46,7 +46,7 @@ sequenceDiagram
     Bridge->>AI: two labelled STT streams (you / them)
     AI-->>Bridge: completed utterance
     Note over Bridge: cheap gate: fillers, greetings, repeats, your own speech → SILENT
-    Bridge->>AI: rarely: goal + last 20 turns → one line or SILENT (timeout 0.9 s)
+    Bridge->>AI: rarely: goal + last 20 turns → one line or SILENT (timeout 2.5 s)
     Bridge-->>You: hint (page)
     Bridge-->>Chat: hint (one ticker message, edited in place)
     You->>Bridge: Speak (tap)
@@ -59,9 +59,9 @@ The plugin (inside Hermes) and the bridge (`hermes ghost serve`, a FastAPI proce
 SQLite file. The plugin creates sessions and one-time links, pushes the ticker and posts the
 summary; the bridge carries audio, runs transcription, the gate and the hint model.
 
-**Latency.** Hints target < 1.5 s after the other party finishes a meaningful sentence:
+**Latency.** A hint lands about 1-2 s after the other party finishes a meaningful sentence (the hint model alone measured 0.6-1.3 s):
 server VAD closes an utterance after ~500 ms of silence, the gate is pure Python, and the hint
-model (default `gpt-4.1-mini`, temperature 0.2, ≤ 60 tokens) has a hard 0.9 s timeout. A slow
+model (default `gpt-4.1-mini`, temperature 0.2, ≤ 60 tokens) has a hard 2.5 s timeout. A slow
 hint is skipped, never queued. Partial transcripts only update the caption on your page.
 
 **Two modes.** *Web* (default): two browser pages, audio relayed by the bridge. *Twilio*: Twilio

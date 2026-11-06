@@ -46,7 +46,7 @@ def test_bargaining_hints_survive_cleaning(line):
 
 def test_prompt_carries_bargaining_rules():
     assert "never accept the first offer" in hints.SYSTEM_PROMPT
-    assert "never reveal the user's target" in hints.SYSTEM_PROMPT
+    assert "never suggest saying them" in hints.SYSTEM_PROMPT
 
 
 def test_demo_env_fills_only_known_unset_keys(tmp_path):
@@ -62,3 +62,12 @@ def test_demo_env_missing_file_is_fine(tmp_path):
     environ: dict = {}
     _demo().load_demo_env(tmp_path / "absent.env", environ)
     assert environ == {}
+
+
+def test_messages_point_at_their_latest_line():
+    turns = [{"speaker": "them", "text": "$79 on a 2-year contract"},
+             {"speaker": "you", "text": "no contract"},
+             {"speaker": "them", "text": "I can waive the router fee"}]
+    msgs = hints.build_messages(goal="lower my bill", callee_label="", turns=turns,
+                                previous_hints=[])
+    assert "REACT TO THEIR LATEST LINE: I can waive the router fee" in msgs[1]["content"]

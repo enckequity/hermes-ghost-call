@@ -1,7 +1,7 @@
 """Bridge-side hint pipeline: completed utterance -> cheap gate -> (rarely) hint model -> hint.
 
 Latency budget: the gate is pure Python; the hint model is called only when the gate says yes,
-with a hard timeout (default 0.9 s). On timeout the hint is skipped, never queued. Inside the
+with a hard timeout (default 2.5 s). On timeout the hint is skipped, never queued. Inside the
 rate-limit window a gated utterance does not stack a second call: it marks the engine pending and
 one deferred attempt runs on the latest context when the window opens (coalescing).
 """
@@ -43,7 +43,7 @@ class HintEngine:
         self.live_at = float(session.get("live_at") or self.clock())
         self.keep_turns = bool(cfg.get("store_transcripts", True))
         self.tap_only = cfg.get("hint_mode") == "tap"
-        self.timeout_s = float(cfg.get("hint_timeout_ms", 900)) / 1000.0
+        self.timeout_s = float(cfg.get("hint_timeout_ms", 2500)) / 1000.0
         self.limiter = hintsmod.RateLimiter(cfg.get("min_hint_interval_s", 4),
                                             cfg.get("max_hints_per_session", 40),
                                             count=store.hint_count(self.sid))

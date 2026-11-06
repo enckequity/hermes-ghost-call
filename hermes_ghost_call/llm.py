@@ -76,7 +76,7 @@ class OpenAIClient:
         return resp
 
     async def chat(self, messages: list[dict], *, model: str = DEFAULT_MODEL,
-                   max_tokens: int = 60, temperature: float = 0.2, timeout: float = 0.9,
+                   max_tokens: int = 60, temperature: float = 0.2, timeout: float = 2.5,
                    json_mode: bool = False) -> str:
         model = model or DEFAULT_MODEL
         body: dict[str, Any] = {"model": model, "messages": messages,

@@ -21,7 +21,7 @@ DEFAULTS: dict[str, Any] = {
     "store_transcripts": True,
     "user_name": "",
     "user_number": "",
-    "hint_timeout_ms": 900,
+    "hint_timeout_ms": 2500,
 }
 MAX_DURATION_HARD_S = 3600
 MIN_DURATION_S = 60
@@ -69,5 +69,5 @@ def resolve(get: Callable[[str, Any], Any] | None) -> dict[str, Any]:
         "store_transcripts": _bool(raw("store_transcripts"), True),
         "user_name": str(raw("user_name") or "").strip()[:60],
         "user_number": str(raw("user_number") or "").strip(),
-        "hint_timeout_ms": int(max(300, min(3000, _num(raw("hint_timeout_ms"), 900)))),
+        "hint_timeout_ms": int(max(300, min(5000, _num(raw("hint_timeout_ms"), 2500)))),
     }

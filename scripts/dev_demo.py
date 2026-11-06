@@ -7,10 +7,12 @@ It starts the bridge on PUBLIC_BASE_URL's port (default http://localhost:8766), 
 session through the same service the plugin uses, prints the You/Them links, and prints every
 chat message the plugin would post (ticker edits and the one summary). Type a command at the
 prompt: ``speak``, ``hangup``, ``status``, ``allow`` / ``deny`` (Intervene), ``say <text>``
-(Intervene, needs allow) or ``quit``. OPENAI_API_KEY enables transcription and hints.
+(Intervene, needs allow), ``them <line>`` / ``you <line>`` (rehearse by typing, no mic) or
+``quit``. OPENAI_API_KEY enables transcription and hints.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import tempfile
@@ -63,6 +65,24 @@ def load_demo_env(path: Path, environ=os.environ) -> None:
         key, value = key.strip(), value.strip().strip('"').strip("'").strip()
         if key in DEMO_ENV_KEYS and value and not environ.get(key, "").strip():
             environ[key] = value
+
+
+async def rehearse(bridge, service, role: str, text: str) -> str:
+    """Feed one typed line into the live session as if it had been transcribed from the call.
+
+    Without an open You page this attaches a silent "you" side, so the call goes live and hints
+    run; opening the You page later still works.
+    """
+    active = service.store.active_sessions()
+    rt = bridge.runtime(active[0]["id"]) if active else None
+    if rt is None:
+        return "no active ghost session (start a new one with: start <goal>)"
+    if rt.engine is None:
+        await rt.attach("you", None)
+    if rt.engine is None:
+        return "the session is not live yet"
+    await rt._on_final(role, text)
+    return f"({role}: {text})"
 
 
 class TerminalMessage:
@@ -126,13 +146,18 @@ def main() -> int:
     if settings.missing_env():
         print("note: missing " + ", ".join(settings.missing_env()) +
               " (the call works; transcription and hints need OPENAI_API_KEY)")
-    server = uvicorn.Server(uvicorn.Config(create_app(settings), host=settings.host,
-                                           port=settings.port, log_level="warning"))
-    threading.Thread(target=server.run, daemon=True).start()
+    app = create_app(settings)
+    server = uvicorn.Server(uvicorn.Config(app, host=settings.host, port=settings.port,
+                                           log_level="warning"))
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=lambda: loop.run_until_complete(server.serve()), daemon=True).start()
     while not server.started:
         time.sleep(0.05)
-    tools.configure(ctx=TerminalCtx({"user_name": os.environ.get("GHOST_USER_NAME", "Winch")}))
+    service = tools.configure(ctx=TerminalCtx({"user_name":
+                                               os.environ.get("GHOST_USER_NAME", "Winch")}))
     print(commands.ghost_command(f"start {goal}"), flush=True)
+    print("Rehearse without a mic or a friend: type `them <line>` for what the other party says "
+          "and `you <line>` for your side; hints appear here.", flush=True)
     while True:
         try:
             line = input("\nghost> ").strip()
@@ -147,6 +172,12 @@ def main() -> int:
             return 0
         if line.startswith("say "):
             print(tools.HANDLERS["ghost_intervene"]({"text": line[4:]}))
+            continue
+        role, _, text = line.partition(" ")
+        if role in ("them", "you") and text.strip():
+            future = asyncio.run_coroutine_threadsafe(
+                rehearse(app.state.bridge, service, role, text.strip()), loop)
+            print(future.result(timeout=10))
             continue
         alias = {"allow": "intervene allow", "deny": "intervene deny"}.get(line, line)
         print(commands.ghost_command(alias))
