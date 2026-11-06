@@ -60,6 +60,12 @@ def main() -> int:
                                                  "hermes-ghost-demo.db"))
     os.environ.setdefault("HERMES_GHOST_BRIDGE_PORT",
                           os.environ["PUBLIC_BASE_URL"].rsplit(":", 1)[-1].strip("/") or "8766")
+    if not os.environ.get("OPENAI_API_KEY", "").strip() and sys.stdin.isatty():
+        import getpass  # hidden input: the key never shows on screen or in shell history
+
+        key = getpass.getpass("OpenAI API key (paste, hidden; Enter to skip): ").strip()
+        if key:
+            os.environ["OPENAI_API_KEY"] = key
     import uvicorn
 
     from hermes_ghost_call import commands, tools

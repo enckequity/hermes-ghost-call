@@ -138,11 +138,11 @@ Windows (PowerShell):
 
 ```powershell
 python -m venv .venv; .venv\Scripts\pip install -e . -r requirements-dev.txt
-$env:OPENAI_API_KEY = "sk-..."
 .venv\Scripts\python scripts\dev_demo.py 'book a table Friday 8pm for 4, budget $80, name Winch'
 ```
 
-Single quotes keep the shell from expanding `$80`.
+Single quotes keep the shell from expanding `$80`. If `OPENAI_API_KEY` is not set, the demo asks
+for it with hidden input, so the key never lands on screen or in shell history.
 
 It starts the bridge on `http://localhost:8766`, prints the You/Them links and prints every chat
 message the plugin would post (the ticker and the summary). Type `speak`, `allow`, `say <text>`,
