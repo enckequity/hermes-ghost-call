@@ -27,7 +27,7 @@ requires_env:
     url: "https://platform.openai.com/api-keys"
     secret: true
   - name: PUBLIC_BASE_URL
-    description: "Public URL of the ghost bridge (ngrok/cloudflared tunnel, or http://localhost:8766 for a local demo)"
+    description: "Public URL where the ghost bridge is reachable (http://localhost:8766 for a same-machine demo)"
 optional_env:
   - name: TWILIO_ACCOUNT_SID
     description: "Twilio mode only: account SID"
