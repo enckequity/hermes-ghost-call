@@ -1,0 +1,19 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# cont-init: sync the plugin from the image into the persistent data dir on every boot and create
+# the shared DB dir. Reads no secrets and prints none.
+set -eu
+HERMES_HOME="${HERMES_HOME:-/opt/data}"
+PLUGIN_DIR="$HERMES_HOME/plugins/hermes-ghost-call"
+DB_DIR="$(dirname "${HERMES_GHOST_DB:-$HERMES_HOME/plugin-data/hermes-ghost-call/ghost.db}")"
+
+mkdir -p "$HERMES_HOME/plugins"
+rm -rf "$PLUGIN_DIR"
+mkdir -p "$PLUGIN_DIR"
+cp -a /opt/hermes-ghost-call/. "$PLUGIN_DIR/"
+find "$PLUGIN_DIR" -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+chown -R hermes:hermes "$HERMES_HOME/plugins"
+
+mkdir -p "$DB_DIR"
+chown hermes:hermes "$HERMES_HOME/plugin-data" "$DB_DIR" 2>/dev/null || true
+echo "[hermes-ghost-call] plugin synced to $PLUGIN_DIR; db dir $DB_DIR"

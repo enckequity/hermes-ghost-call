@@ -1,0 +1,88 @@
+manifest_version: 2
+name: hermes-ghost-call
+version: "0.1.0"
+description: "Ghost Call Copilot: Hermes listens to your call and whispers one-line hints to you only. It never joins the line."
+author: winchxyz
+kind: standalone
+license: MIT
+homepage: https://github.com/winchxyz/hermes-ghost-call
+tags: [voice, phone, ghost, copilot, realtime]
+provides_tools:
+  - ghost_start
+  - ghost_status
+  - ghost_hint_latest
+  - ghost_speak
+  - ghost_intervene
+  - ghost_hangup
+  - ghost_summary
+provides_hooks: [pre_tool_call]
+python_dependencies:
+  - "fastapi>=0.110,<1"
+  - "uvicorn[standard]>=0.29,<1"
+  - "websockets>=14,<16"
+  - "httpx>=0.27,<1"
+requires_env:
+  - name: OPENAI_API_KEY
+    description: "OpenAI key: realtime transcription, the hint model, earpiece TTS and the summary"
+    url: "https://platform.openai.com/api-keys"
+    secret: true
+  - name: PUBLIC_BASE_URL
+    description: "Public URL of the ghost bridge (ngrok/cloudflared tunnel, or http://localhost:8766 for a local demo)"
+optional_env:
+  - name: TWILIO_ACCOUNT_SID
+    description: "Twilio mode only: account SID"
+    secret: true
+  - name: TWILIO_AUTH_TOKEN
+    description: "Twilio mode only: auth token"
+    secret: true
+  - name: TWILIO_FROM_NUMBER
+    description: "Twilio mode only: your Twilio number in E.164"
+# Developer-only env (deliberately not in requires_env; never set by the model):
+#   HERMES_GHOST_TEST_ALLOWLIST  comma-separated E.164 numbers Twilio mode may dial.
+#                                Unset or empty means ALL dialing is refused. Web mode dials nothing.
+#   HERMES_GHOST_ALLOW_ALL=1     explicit developer opt-out of the allowlist.
+#   HERMES_GHOST_TRUST_PROXY=1   rate-limit web routes on X-Forwarded-For (only behind a proxy).
+config_schema:
+  hint_mode:
+    type: string
+    default: "auto"
+    choices: ["auto", "tap"]
+    description: "auto: hints stream as the other party talks. tap: a hint only when you tap Hint on your page"
+  min_hint_interval_s:
+    type: number
+    default: 4
+    description: "Minimum seconds between two hints (floor 4)"
+  max_hints_per_session:
+    type: integer
+    default: 40
+    description: "Hard cap on hints per call (ceiling 40)"
+  model:
+    type: string
+    default: "gpt-4.1-mini"
+    description: "Fast OpenAI text model for hints and the summary"
+  stt_model:
+    type: string
+    default: "gpt-4o-mini-transcribe"
+    description: "OpenAI realtime transcription model"
+  voice:
+    type: string
+    default: "coral"
+    description: "OpenAI TTS voice for the earpiece whisper"
+  max_duration_s:
+    type: integer
+    default: 900
+    description: "Hard cap on one ghost session in seconds (60 to 3600)"
+  daily_session_limit:
+    type: integer
+    default: 20
+    description: "Maximum ghost sessions per rolling 24 hours"
+  store_transcripts:
+    type: boolean
+    default: true
+    description: "Keep text transcripts in plugin storage (never audio)"
+  user_name:
+    type: string
+    description: "Your name, used only in the Intervene AI disclosure and the follow-up SMS draft"
+  user_number:
+    type: string
+    description: "Twilio mode only: your own phone number in E.164 (the first leg Twilio rings)"

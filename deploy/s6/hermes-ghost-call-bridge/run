@@ -1,0 +1,11 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# hermes-ghost-call bridge, supervised by s6. Binds 0.0.0.0:$PORT and shares the plugin SQLite DB
+# through HERMES_GHOST_DB. A missing OPENAI_API_KEY does not stop it (healthz stays up).
+export HOME=/opt/data
+cd /opt/data
+export PYTHONPATH=/opt/hermes-ghost-call
+export HERMES_GHOST_BRIDGE_HOST="${HERMES_GHOST_BRIDGE_HOST:-0.0.0.0}"
+mkdir -p "$(dirname "$HERMES_GHOST_DB")"
+[ "$(id -u)" = 0 ] || exec /opt/hermes/.venv/bin/python -m hermes_ghost_call.bridge
+exec s6-setuidgid hermes /opt/hermes/.venv/bin/python -m hermes_ghost_call.bridge

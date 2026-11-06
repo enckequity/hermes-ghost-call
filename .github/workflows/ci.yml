@@ -1,0 +1,60 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . -r requirements-dev.txt
+      - name: Ruff
+        run: ruff check .
+      - name: Unit tests (no network)
+        run: pytest -q -m "not e2e"
+  hermes-plugin-checks:
+    # Official Hermes checks against a pinned hermes-agent commit (GitHub runner only).
+    runs-on: ubuntu-latest
+    env:
+      HERMES_AGENT_SHA: ed1afb082eb3e46cf2edae9d8f68fb67b09ee4df
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - name: Install hermes-agent (pinned, from its uv.lock)
+        run: |
+          H="$RUNNER_TEMP/hermes-agent"
+          git init -q "$H"
+          git -C "$H" remote add origin https://github.com/NousResearch/hermes-agent
+          git -C "$H" fetch -q --depth 1 origin "$HERMES_AGENT_SHA"
+          git -C "$H" checkout -q FETCH_HEAD
+          (cd "$H" && uv sync --frozen --python 3.14)
+          echo "$H/.venv/bin" >> "$GITHUB_PATH"
+          # Doctor stages the plugin under HERMES_HOME; it must live outside the plugin dir.
+          echo "HERMES_HOME=$RUNNER_TEMP/hermes-home" >> "$GITHUB_ENV"
+      - name: hermes --version
+        run: hermes --version
+      - name: hermes plugins validate
+        run: hermes plugins validate . --install-deps
+      - name: hermes plugins doctor --ci
+        run: hermes plugins doctor . --ci
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: docker build
+        run: docker build -t hermes-ghost-call:ci .
+      - name: Smoke - plugin deps import
+        run: |
+          docker run --rm --entrypoint /opt/hermes/.venv/bin/python \
+            -e PYTHONPATH=/opt/hermes-ghost-call hermes-ghost-call:ci \
+            -c "import hermes_ghost_call.bridge.app, fastapi, uvicorn, websockets, httpx; print('imports ok')"
