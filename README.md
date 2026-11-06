@@ -127,10 +127,22 @@ bridge under s6 (the hermes-phone lesson: plugin and bridge must share the SQLit
 
 ### Local demo without Hermes
 
+macOS / Linux (bash, zsh):
+
 ```bash
 python -m venv .venv && .venv/bin/pip install -e . -r requirements-dev.txt
-OPENAI_API_KEY=sk-... python scripts/dev_demo.py "book a table Friday 8pm for 4, budget $80, name Winch"
+OPENAI_API_KEY=sk-... .venv/bin/python scripts/dev_demo.py 'book a table Friday 8pm for 4, budget $80, name Winch'
 ```
+
+Windows (PowerShell):
+
+```powershell
+python -m venv .venv; .venv\Scripts\pip install -e . -r requirements-dev.txt
+$env:OPENAI_API_KEY = "sk-..."
+.venv\Scripts\python scripts\dev_demo.py 'book a table Friday 8pm for 4, budget $80, name Winch'
+```
+
+Single quotes keep the shell from expanding `$80`.
 
 It starts the bridge on `http://localhost:8766`, prints the You/Them links and prints every chat
 message the plugin would post (the ticker and the summary). Type `speak`, `allow`, `say <text>`,
