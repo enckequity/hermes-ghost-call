@@ -145,8 +145,10 @@ Ready-made scenarios: `scripts/dev_demo.py isp` (haggle with the internet provid
 discount) and `scripts/dev_demo.py table`. Each prints a cheat sheet for whoever plays the other
 party; the full scripts are in [docs/DEMO.md](docs/DEMO.md).
 
-Single quotes keep the shell from expanding `$80`. If `OPENAI_API_KEY` is not set, the demo asks
-for it with hidden input, so the key never lands on screen or in shell history.
+Single quotes keep the shell from expanding `$80`. The demo (only the demo, never the plugin) also
+reads `OPENAI_API_KEY`, `PUBLIC_BASE_URL` and `GHOST_USER_NAME` from a git-ignored `demo.env` in
+the repo root. With no key anywhere it asks for one with hidden input, so the key never lands on
+screen or in shell history.
 
 It starts the bridge on `http://localhost:8766`, prints the You/Them links and prints every chat
 message the plugin would post (the ticker and the summary). Type `speak`, `allow`, `say <text>`,

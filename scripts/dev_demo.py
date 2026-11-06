@@ -42,6 +42,29 @@ SCENARIOS = {
 }
 
 
+DEMO_ENV_KEYS = ("OPENAI_API_KEY", "PUBLIC_BASE_URL", "GHOST_USER_NAME")
+
+
+def load_demo_env(path: Path, environ=os.environ) -> None:
+    """Fill a few demo settings from a local, git-ignored ``demo.env`` (KEY=value lines).
+
+    Only this local demo reads it; the Hermes plugin itself never reads env files. Values already
+    set in the process env win, unknown keys are ignored, and nothing is ever printed.
+    """
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except OSError:
+        return
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip().strip('"').strip("'").strip()
+        if key in DEMO_ENV_KEYS and value and not environ.get(key, "").strip():
+            environ[key] = value
+
+
 class TerminalMessage:
     def __init__(self, text: str) -> None:
         self.text = text
@@ -85,6 +108,7 @@ def main() -> int:
                                                  "hermes-ghost-demo.db"))
     os.environ.setdefault("HERMES_GHOST_BRIDGE_PORT",
                           os.environ["PUBLIC_BASE_URL"].rsplit(":", 1)[-1].strip("/") or "8766")
+    load_demo_env(ROOT / "demo.env")
     # Both ends must be a terminal: on Windows a redirected NUL stdin still reports isatty().
     if not os.environ.get("OPENAI_API_KEY", "").strip() and sys.stdin.isatty() \
             and sys.stdout.isatty():

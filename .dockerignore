@@ -7,3 +7,4 @@ scripts
 docs
 *.db
 .env
+demo.env
