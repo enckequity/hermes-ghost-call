@@ -143,13 +143,13 @@ def test_far_field_session_update_and_prompt():
 
     near = stt.session_update("gpt-4o-mini-transcribe")["session"]["audio"]["input"]
     far = stt.session_update("gpt-4o-mini-transcribe", far_field=True,
-                             prompt="A phone call.  Target $60 with Northwind")
+                             prompt="Northwind,  $60/month")
     far = far["session"]["audio"]["input"]
     assert near["noise_reduction"] == {"type": "near_field"}
     assert "prompt" not in near["transcription"]
     assert far["noise_reduction"] == {"type": "far_field"}
     assert far["turn_detection"]["threshold"] == stt.FAR_FIELD_VAD < 0.5
-    assert far["transcription"]["prompt"] == "A phone call. Target $60 with Northwind"
+    assert far["transcription"]["prompt"] == "Northwind, $60/month"
 
 
 def test_agc_lifts_a_quiet_voice_but_not_hiss():
@@ -170,3 +170,25 @@ def test_agc_lifts_a_quiet_voice_but_not_hiss():
     out = [rms(agc(chunk(400))) for _ in range(6)]
     assert out[-1] > 2000  # a quiet phone voice is lifted toward the target
     assert rms(agc(chunk(9000))) <= 9000  # a loud voice is never boosted
+
+
+def test_transcriber_vocabulary_is_names_and_numbers_only():
+    from hermes_ghost_call.bridge import stt
+
+    goal = ("get a lower price on my home internet. I pay $89/month for 500 Mbps. FastNet offers "
+            "1 Gbps at $55/month. Target $60/month or less. Name Winch")
+    vocab = stt.vocabulary("Northwind Fiber", goal)
+    for word in ("Northwind", "FastNet", "$89/month", "$60/month", "500 Mbps", "Winch"):
+        assert word in vocab
+    for sentence_word in ("lower", "price", "Target", "less", "Name"):
+        assert sentence_word not in vocab.split(", ")
+
+
+def test_prompt_echo_on_noise_is_dropped():
+    from hermes_ghost_call.bridge import stt
+
+    vocab = "Northwind, Fiber, $89/month, FastNet, $55/month, $60/month, Winch"
+    assert stt.echoes_prompt("Northwind Fiber, FastNet, $55/month, $60/month", vocab)
+    assert not stt.echoes_prompt("I can offer $60 a month for twelve months.", vocab)
+    assert not stt.echoes_prompt("Thank you for calling Northwind Fiber.", vocab)
+    assert not stt.echoes_prompt("FastNet", vocab)  # too short to judge

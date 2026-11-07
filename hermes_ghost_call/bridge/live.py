@@ -26,6 +26,7 @@ from ..session import ENDED, LIVE, Store, elapsed
 from . import audio, twilio_io
 from .settings import BridgeSettings
 from .stt import SttConnect, Transcriber
+from .stt import vocabulary as stt_vocabulary
 
 log = logging.getLogger(__name__)
 
@@ -135,11 +136,10 @@ class GhostRuntime:
                     outcome.split(":")[0], "Nothing useful to add right now.")})
 
     def _stt_prompt(self) -> str:
-        """Vocabulary for the transcriber: the goal (amounts, names) and who is on the line."""
+        """Vocabulary for the transcriber: names and amounts from the goal and the callee, as a
+        bare list (never the goal's sentences, which noise can turn into invented lines)."""
         session = self.session()
-        who = session.get("callee_label") or ""
-        return (f"A phone call. {session.get('goal', '')}"
-                + (f" The other party: {who}." if who else ""))
+        return stt_vocabulary(session.get("callee_label") or "", session.get("goal") or "")
 
     def _speaker(self, role: str) -> str:
         """Room mode: one mic hears both people, so nobody is labelled; the model infers."""

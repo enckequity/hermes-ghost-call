@@ -14,6 +14,7 @@ import base64
 import contextlib
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
@@ -31,6 +32,42 @@ MAX_PROMPT_CHARS = 500
 AGC_TARGET_RMS = 3000.0  # room mode: lift each 100 ms chunk toward this level...
 AGC_MAX_GAIN = 8.0  # ...by at most this much...
 AGC_FLOOR_RMS = 90.0  # ...and never lift chunks quieter than this (room hiss stays hiss)
+
+
+_VOCAB_TOKEN = re.compile(
+    r"\$?\d[\d,.]*(?:/\w+|%)?(?:\s?(?:Mbps|Gbps|GB|MB|am|pm))?|[A-Z][\w'&-]*[A-Za-z]")
+_NOT_NAMES = {"I", "I'm", "I've", "My", "Me", "The", "A", "An", "And", "Or", "But", "To", "For",
+              "Of", "On", "In", "At", "With", "No", "Not", "Target", "Budget", "Walk", "Name",
+              "Max", "Ask", "Get", "Book", "Call", "Tell", "Say", "Please", "If", "It", "This",
+              "That", "We", "Our", "You", "Your", "A phone call"}
+
+
+def vocabulary(*texts: str) -> str:
+    """Names and numbers from the goal, as a bare comma list for the transcriber.
+
+    Only words, never the goal's sentences: given whole sentences, the transcriber can
+    "hear" them in noise and invent a line that was never said (with the user's private target
+    in it). A list of names and amounts still fixes "sixty" vs "fifty" and brand names.
+    """
+    seen: list[str] = []
+    for text in texts:
+        for tok in _VOCAB_TOKEN.findall(text or ""):
+            tok = tok.strip(",.")
+            if tok and tok not in _NOT_NAMES and tok not in seen:
+                seen.append(tok)
+    return ", ".join(seen)[:MAX_PROMPT_CHARS]
+
+
+def echoes_prompt(text: str, prompt: str) -> bool:
+    """True when a transcript is mostly the vocabulary itself: the model echoing its prompt on
+    noise, not a person speaking. Such lines are dropped before they reach hints or summary."""
+    if not prompt:
+        return False
+    words = re.findall(r"[\w$']+", text.lower())
+    if len(words) < 3:
+        return False
+    vocab = set(re.findall(r"[\w$']+", prompt.lower()))
+    return sum(w in vocab for w in words) / len(words) >= 0.7
 
 
 class Agc:
@@ -232,7 +269,7 @@ class Transcriber:
             elif kind == "conversation.item.input_audio_transcription.completed":
                 self._partials.pop(str(event.get("item_id") or ""), None)
                 text = " ".join(str(event.get("transcript") or "").split())
-                if text:
+                if text and not echoes_prompt(text, self.prompt):
                     await self._safe(self.on_final, text)
             elif kind == "error":
                 err = event.get("error") or {}

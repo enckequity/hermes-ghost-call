@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -44,7 +45,9 @@ SCENARIOS = {
 }
 
 
-DEMO_ENV_KEYS = ("OPENAI_API_KEY", "PUBLIC_BASE_URL", "GHOST_USER_NAME")
+DEMO_ENV_KEYS = ("OPENAI_API_KEY", "PUBLIC_BASE_URL", "GHOST_USER_NAME", "GHOST_USER_NUMBER",
+                 "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER",
+                 "HERMES_GHOST_TEST_ALLOWLIST", "HERMES_GHOST_BRIDGE_PORT")
 
 
 def load_demo_env(path: Path, environ=os.environ) -> None:
@@ -65,6 +68,98 @@ def load_demo_env(path: Path, environ=os.environ) -> None:
         key, value = key.strip(), value.strip().strip('"').strip("'").strip()
         if key in DEMO_ENV_KEYS and value and not environ.get(key, "").strip():
             environ[key] = value
+
+
+def parse_args(args: list[str]) -> dict:
+    """``[table|isp] [room] [+E164] [--public] [free-text goal]`` in any order."""
+    out: dict = {"scenario": None, "room": False, "callee": "", "public": False, "goal": ""}
+    rest = []
+    for arg in args:
+        low = arg.strip().lower()
+        if low in SCENARIOS and out["scenario"] is None:
+            out["scenario"] = SCENARIOS[low]
+        elif low in ("room", "speaker", "--room"):
+            out["room"] = True
+        elif low == "--public":
+            out["public"] = True
+        elif re.fullmatch(r"\+\d{6,15}", arg.strip()):
+            out["callee"] = arg.strip()
+        else:
+            rest.append(arg)
+    text = " ".join(rest).strip()
+    out["goal"] = (out["scenario"]["goal"] if out["scenario"] else "") or text or \
+        SCENARIOS["table"]["goal"]
+    return out
+
+
+def local_port(url: str) -> int | None:
+    """The port of a localhost URL (``http://localhost:8767`` -> 8767), else None."""
+    m = re.fullmatch(r"https?://(?:localhost|127\.0\.0\.1)(?::(\d+))?/?", (url or "").strip())
+    if not m:
+        return None
+    return int(m.group(1)) if m.group(1) else 80
+
+
+TWILIO_KEYS = ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER",
+               "GHOST_USER_NUMBER")
+
+
+def prepare_twilio(callee: str, environ=os.environ) -> str:
+    """Check what a Twilio demo needs; returns a problem to print, or "" when ready.
+
+    The test allowlist is fail-closed. For this hand-typed demo it is set to exactly the two
+    numbers of this run (your phone and the callee you typed), unless demo.env sets one.
+    """
+    missing = [k for k in TWILIO_KEYS if not environ.get(k, "").strip()]
+    if missing:
+        return ("Twilio mode needs these in demo.env: " + ", ".join(missing) +
+                ". See docs/TWILIO.md.")
+    url = environ.get("PUBLIC_BASE_URL", "")
+    if not url.startswith("https://"):
+        return ("Twilio must reach the bridge over public HTTPS. Run with --public (needs "
+                "cloudflared) or set PUBLIC_BASE_URL=https://... in demo.env. See docs/TWILIO.md.")
+    if not environ.get("HERMES_GHOST_TEST_ALLOWLIST", "").strip():
+        environ["HERMES_GHOST_TEST_ALLOWLIST"] = f"{environ['GHOST_USER_NUMBER']},{callee}"
+        print("Dialing allowlist for this run: your phone and " + callee, flush=True)
+    return ""
+
+
+def open_public_url(port: int, timeout_s: float = 40.0):
+    """Start a cloudflared quick URL for the bridge; returns (process, https URL) or None."""
+    import shutil
+    import subprocess
+
+    exe = shutil.which("cloudflared")
+    if not exe:
+        print("--public needs cloudflared. Install it once:\n"
+              "  winget install --id Cloudflare.cloudflared\n"
+              "then open a new terminal and run the demo again.", flush=True)
+        return None
+    proc = subprocess.Popen([exe, "tunnel", "--no-autoupdate", "--url",
+                             f"http://127.0.0.1:{port}"], stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                            errors="replace")
+    found: dict = {}
+
+    def watch() -> None:
+        for line in proc.stderr:
+            m = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", line)
+            if m and "url" not in found:
+                found["url"] = m.group(0)
+            if "Registered" in line and "url" in found:
+                found["ready"] = True
+
+    threading.Thread(target=watch, daemon=True).start()
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline and not found.get("ready"):
+        time.sleep(0.2)
+    if not found.get("url"):
+        proc.terminate()
+        print("cloudflared did not give a public URL in time.", flush=True)
+        return None
+    time.sleep(2.0)  # the new hostname needs a moment before Twilio can resolve it
+    print(f"Public URL for Twilio: {found['url']}", flush=True)
+    return proc, found["url"]
 
 
 def port_free(host: str, port: int) -> bool:
@@ -130,17 +225,27 @@ def main() -> int:
     for stream in (sys.stdout, sys.stderr):  # Windows consoles default to cp1252
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
-    args = sys.argv[1:]
-    scenario = SCENARIOS.get(args[0].lower()) if len(args) == 1 else None
-    goal = scenario["goal"] if scenario else " ".join(args) or SCENARIOS["table"]["goal"]
-    if scenario:
-        print(scenario["brief"], flush=True)
-    os.environ.setdefault("PUBLIC_BASE_URL", "http://localhost:8766")
+    opts = parse_args(sys.argv[1:])
+    if opts["scenario"]:
+        print(opts["scenario"]["brief"], flush=True)
+    load_demo_env(ROOT / "demo.env")
+    port = int(os.environ.get("HERMES_GHOST_BRIDGE_PORT") or local_port(
+        os.environ.get("PUBLIC_BASE_URL", "")) or 8766)
+    os.environ["HERMES_GHOST_BRIDGE_PORT"] = str(port)
+    public = None
+    if opts["public"]:
+        public = open_public_url(port)
+        if public is None:
+            return 1
+        os.environ["PUBLIC_BASE_URL"] = public[1]
+    os.environ.setdefault("PUBLIC_BASE_URL", f"http://localhost:{port}")
     os.environ.setdefault("HERMES_GHOST_DB", str(Path(tempfile.gettempdir()) /
                                                  "hermes-ghost-demo.db"))
-    os.environ.setdefault("HERMES_GHOST_BRIDGE_PORT",
-                          os.environ["PUBLIC_BASE_URL"].rsplit(":", 1)[-1].strip("/") or "8766")
-    load_demo_env(ROOT / "demo.env")
+    if opts["callee"]:
+        problem = prepare_twilio(opts["callee"])
+        if problem:
+            print(problem, flush=True)
+            return 1
     # Both ends must be a terminal: on Windows a redirected NUL stdin still reports isatty().
     if not os.environ.get("OPENAI_API_KEY", "").strip() and sys.stdin.isatty() \
             and sys.stdout.isatty():
@@ -173,9 +278,11 @@ def main() -> int:
     threading.Thread(target=lambda: loop.run_until_complete(server.serve()), daemon=True).start()
     while not server.started:
         time.sleep(0.05)
-    service = tools.configure(ctx=TerminalCtx({"user_name":
-                                               os.environ.get("GHOST_USER_NAME", "Winch")}))
-    print(commands.ghost_command(f"start {goal}"), flush=True)
+    service = tools.configure(ctx=TerminalCtx({
+        "user_name": os.environ.get("GHOST_USER_NAME", "Winch"),
+        "user_number": os.environ.get("GHOST_USER_NUMBER", "")}))
+    prefix = "room " if opts["room"] else f"{opts['callee']} " if opts["callee"] else ""
+    print(commands.ghost_command(f"start {prefix}{opts['goal']}"), flush=True)
     print("Rehearse without a mic or a friend: type `them <line>` for what the other party says "
           "and `you <line>` for your side; hints appear here.", flush=True)
     while True:
@@ -189,6 +296,8 @@ def main() -> int:
         if line in ("quit", "exit"):
             commands.ghost_command("hangup")
             time.sleep(1.0)
+            if public is not None:
+                public[0].terminate()
             return 0
         if line.startswith("say "):
             print(tools.HANDLERS["ghost_intervene"]({"text": line[4:]}))

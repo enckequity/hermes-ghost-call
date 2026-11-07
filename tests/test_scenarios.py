@@ -52,7 +52,7 @@ def test_prompt_carries_bargaining_rules():
 def test_demo_env_fills_only_known_unset_keys(tmp_path):
     path = tmp_path / "demo.env"
     path.write_text("# comment\nOPENAI_API_KEY= \"sk-test-123\" \nPUBLIC_BASE_URL=\n"
-                    "GHOST_USER_NAME=Ana\nTWILIO_AUTH_TOKEN=nope\n", encoding="utf-8")
+                    "GHOST_USER_NAME=Ana\nSOMETHING_ELSE=nope\n", encoding="utf-8")
     environ = {"GHOST_USER_NAME": "Winch"}
     _demo().load_demo_env(path, environ)
     assert environ == {"OPENAI_API_KEY": "sk-test-123", "GHOST_USER_NAME": "Winch"}
