@@ -5,9 +5,9 @@ You make (or take) a normal call. Hermes listens and whispers one-line hints to 
 
 > *Your real-time AI assistant on every call. Earpiece only.*
 
-[![Ghost Call launch video: a real call, hints on your page, a whispered hint, the summary](docs/media/ghost-call-launch.jpg)](docs/media/ghost-call-launch.mp4)
+[![Ghost Call launch video: a real call, hints on your page, a whispered hint, the summary](docs/media/ghost-call-launch.jpg)](https://github.com/winchxyz/hermes-ghost-call/raw/main/docs/media/ghost-call-launch.mp4)
 
-▶ **[Watch the launch video](docs/media/ghost-call-launch.mp4)** (1:24, sound on). Every hint,
+▶ **[Watch the launch video](https://github.com/winchxyz/hermes-ghost-call/raw/main/docs/media/ghost-call-launch.mp4)** (1:24, sound on). Every hint,
 caption and summary in it comes from a real test run of the plugin; how it is made is in
 [`video/`](video/SCRIPT.md).
 

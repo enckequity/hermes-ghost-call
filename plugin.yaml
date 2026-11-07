@@ -1,7 +1,7 @@
 manifest_version: 2
 name: hermes-ghost-call
 version: "0.1.0"
-description: "Ghost Call Copilot: Hermes listens to your call and whispers one-line hints to you only. It never joins the line."
+description: "Ghost Call Copilot: a real-time AI assistant on your calls. Hermes listens and whispers one-line hints to you only; the other side never hears it."
 author: winchxyz
 kind: standalone
 license: MIT
