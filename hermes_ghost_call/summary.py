@@ -36,7 +36,7 @@ SUMMARY_PROMPT = (
 
 
 def _transcript_text(turns: Sequence[dict]) -> str:
-    lines = [f"{'them' if t.get('speaker') == 'them' else 'you'} "
+    lines = [f"{hintsmod.speaker_label(t.get('speaker'))} "
              f"[{hintsmod.stamp(float(t.get('t') or 0))}]: {t.get('text', '')}" for t in turns]
     text = "\n".join(lines)
     return text[-MAX_TRANSCRIPT_CHARS:]

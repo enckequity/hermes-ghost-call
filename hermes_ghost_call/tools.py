@@ -129,6 +129,13 @@ class GhostService:
             out["links"] = self.links(session, tokens)
             out["instructions"] = ("Open 'you' yourself with headphones; send 'them' to the "
                                    "other party. Each link works once, for 10 minutes.")
+        elif chosen.name == modemod.ROOM:
+            tokens = {"you": self.store.mint_token(session["id"], "you", "link", LINK_TTL_S)}
+            out["links"] = self.links(session, tokens)
+            out["instructions"] = ("Open the link on a laptop or tablet, put your phone call on "
+                                   "speaker next to it, and tap Start listening. Ghost hears "
+                                   "both sides through that one mic; hints show on the page. "
+                                   "The link works once, for 10 minutes.")
         else:
             out["instructions"] = ("Twilio will ring your phone first; pick up and the other "
                                    "party is dialed into the call. Ghost only listens.")
@@ -310,15 +317,18 @@ SCHEMAS: dict[str, dict] = {
             "one-line hints to the user only. Hermes never joins the call as a voice and never "
             "calls anyone as an AI persona. Returns two one-time join links in web mode (give "
             "'you' to the user, 'them' goes to the other party) or, in Twilio mode, rings the "
-            "user's phone first. After starting, stay quiet: hints are pushed automatically; "
-            "do not ask the user questions during the call."),
+            "user's phone first. Room mode (speakerphone) returns one link: the user opens it "
+            "on a laptop next to a phone call on speaker (any call app), and Ghost listens "
+            "through that one microphone. After starting, stay quiet: hints are pushed "
+            "automatically; do not ask the user questions during the call."),
         "parameters": {"type": "object", "properties": {
             "goal": {"type": "string", "description": "What the user wants from the call, "
                      "with facts, e.g. 'book a table Friday 8pm for 4, budget $80, name Winch'."},
             "callee_label": {"type": "string", "description": "Who is on the other side, "
                              "e.g. 'Bella Napoli'."},
-            "mode": {"type": "string", "enum": ["web", "twilio"], "description":
-                     "web (default unless Twilio is fully configured) or twilio."},
+            "mode": {"type": "string", "enum": ["web", "twilio", "room"], "description":
+                     "web (default unless Twilio is fully configured), twilio, or room "
+                     "(speakerphone: one page listens to a call on speaker)."},
             "callee_number": {"type": "string", "description": "Twilio mode only: E.164."}},
             "required": ["goal"]}},
     "ghost_status": {

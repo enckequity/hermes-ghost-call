@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -15,10 +16,10 @@ from .session import ENDED, LIVE
 
 log = logging.getLogger(__name__)
 
-USAGE = ("Usage: /ghost start <goal> | status [id] | speak [hint] | intervene allow|deny [id] "
-         "| hangup [id] | transcript [id] | log [n] | check")
-ARGS_HINT = ("start <goal> | status [id] | speak [hint] | intervene allow|deny [id] | hangup [id] "
-             "| transcript [id] | log [n] | check")
+USAGE = ("Usage: /ghost start [room|+number] <goal> | status [id] | speak [hint] | "
+         "intervene allow|deny [id] | hangup [id] | transcript [id] | log [n] | check")
+ARGS_HINT = ("start [room|+number] <goal> | status [id] | speak [hint] | intervene allow|deny "
+             "[id] | hangup [id] | transcript [id] | log [n] | check")
 
 
 def ghost_command(raw_args: str = "", **kwargs: Any) -> str:
@@ -42,21 +43,36 @@ def _who(kwargs: dict) -> str:
 
 
 def _start(rest: list[str], kw: dict) -> str:
+    # "/ghost start room <goal>"         -> speakerphone mode
+    # "/ghost start +15551234567 <goal>" -> Twilio mode, that number is the other party
+    mode, callee_number = "", ""
+    while rest:
+        head = rest[0].strip()
+        if head.lower() in ("room", "speaker", "speakerphone", "--room"):
+            mode, rest = "room", rest[1:]
+        elif re.fullmatch(r"\+\d{6,15}", head):
+            mode, callee_number, rest = "twilio", head, rest[1:]
+        else:
+            break
     goal = " ".join(rest).strip()
     label = ""
     if " with " in f" {goal} ":  # "/ghost start book a table with Bella Napoli" -> label
         head, _, tail = goal.rpartition(" with ")
         if head and tail and len(tail) <= 60:
             label = tail.strip()
-    out = tools.get_service().start(goal=goal, callee_label=label,
+    out = tools.get_service().start(goal=goal, callee_label=label, mode=mode,
+                                    callee_number=callee_number,
                                     origin_session=str(kw.get("session_id") or ""))
     if not out.get("ok"):
         return f"\U0001F47B {out.get('error')}"
     lines = [f"\U0001F47B Ghost {out['session_id']} is ready ({out['mode']} mode, "
              f"hints: {out['hint_mode']}). Hermes never joins the call."]
-    if out.get("links"):
-        lines.append(f"You (open with headphones): {out['links']['you']}")
-        lines.append(f"Them (send to the other party): {out['links']['them']}")
+    links = out.get("links") or {}
+    if "them" in links:
+        lines.append(f"You (open with headphones): {links['you']}")
+        lines.append(f"Them (send to the other party): {links['them']}")
+    elif "you" in links:
+        lines.append(f"Listening page (open next to the call on speaker): {links['you']}")
     lines.append(out.get("instructions", ""))
     for key in ("note", "warning"):
         if out.get(key):

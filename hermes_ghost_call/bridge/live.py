@@ -99,7 +99,8 @@ class GhostRuntime:
             return
         tr = Transcriber(role, connect=self.stt_connect,
                          model=str(self.cfg.get("stt_model") or "gpt-4o-mini-transcribe"),
-                         on_final=self._on_final, on_partial=self._on_partial)
+                         on_final=self._on_final, on_partial=self._on_partial,
+                         far_field=self.mode == "room", prompt=self._stt_prompt())
         self.transcribers[role] = tr
         if not await tr.start():
             await self._send("you", {"event": "notice",
@@ -112,7 +113,7 @@ class GhostRuntime:
         tr = self.transcribers.get(role)
         if tr is not None:
             tr.feed(ulaw)
-        if self.mode == "web":
+        if self.mode == "web":  # room mode relays nothing: the call itself runs on the phone
             await self._relay(role, ulaw)
 
     async def _relay(self, role: str, ulaw: bytes) -> None:
@@ -133,13 +134,27 @@ class GhostRuntime:
                 await self._send("you", {"event": "notice", "text": _NO_HINT.get(
                     outcome.split(":")[0], "Nothing useful to add right now.")})
 
+    def _stt_prompt(self) -> str:
+        """Vocabulary for the transcriber: the goal (amounts, names) and who is on the line."""
+        session = self.session()
+        who = session.get("callee_label") or ""
+        return (f"A phone call. {session.get('goal', '')}"
+                + (f" The other party: {who}." if who else ""))
+
+    def _speaker(self, role: str) -> str:
+        """Room mode: one mic hears both people, so nobody is labelled; the model infers."""
+        return "call" if self.mode == "room" else role
+
     async def _on_final(self, role: str, text: str) -> None:
-        await self._send("you", {"event": "caption", "role": role, "text": text, "final": True})
+        speaker = self._speaker(role)
+        await self._send("you", {"event": "caption", "role": speaker, "text": text,
+                                 "final": True})
         if self.engine is not None:
-            await self.engine.on_utterance(role, text)
+            await self.engine.on_utterance(speaker, text)
 
     async def _on_partial(self, role: str, text: str) -> None:
-        if role == "them":
+        if role == "them" or self.mode == "room":
+            role = self._speaker(role)
             await self._send("you", {"event": "caption", "role": role, "text": text,
                                      "final": False})
 

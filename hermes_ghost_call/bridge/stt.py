@@ -26,6 +26,37 @@ SILENCE_MS = 500
 SEND_EVERY_FRAMES = 5  # 100 ms of 20 ms frames per append event
 MAX_QUEUE = 250  # ~5 s of audio; beyond that the oldest is dropped (a stalled socket)
 VAD_ENERGY = 600.0  # mean |sample| above this counts as speech (client VAD only)
+FAR_FIELD_VAD = 0.3  # server VAD threshold in room mode (default 0.5)
+MAX_PROMPT_CHARS = 500
+AGC_TARGET_RMS = 3000.0  # room mode: lift each 100 ms chunk toward this level...
+AGC_MAX_GAIN = 8.0  # ...by at most this much...
+AGC_FLOOR_RMS = 90.0  # ...and never lift chunks quieter than this (room hiss stays hiss)
+
+
+class Agc:
+    """Automatic gain for room mode: the phone on speaker is several dB quieter than the user,
+    so each chunk is lifted toward one level before transcription. Fast attack, slow release."""
+
+    def __init__(self) -> None:
+        self.gain = 1.0
+
+    def __call__(self, pcm: bytes) -> bytes:
+        a = audio._pcm_array(pcm)
+        if not a:
+            return pcm
+        rms = (sum(v * v for v in a) / len(a)) ** 0.5
+        if rms < AGC_FLOOR_RMS:
+            want = 1.0
+        else:
+            want = max(1.0, min(AGC_MAX_GAIN, AGC_TARGET_RMS / rms))
+        # quieter chunk (gain going up): move slowly; louder chunk (gain going down): at once
+        self.gain = want if want < self.gain else self.gain + (want - self.gain) * 0.5
+        if self.gain <= 1.01:
+            return pcm
+        g = self.gain
+        for i, v in enumerate(a):
+            a[i] = max(-32768, min(32767, int(v * g)))
+        return audio._to_bytes(a)
 
 
 class SttConnection(Protocol):
@@ -75,14 +106,22 @@ def uses_server_vad(model: str) -> bool:
     return not str(model or "").lower().startswith("gpt-live")
 
 
-def session_update(model: str) -> dict:
+def session_update(model: str, *, far_field: bool = False, prompt: str = "") -> dict:
+    """``far_field``: room mode, a laptop mic hearing a phone on speaker plus the user. It gets
+    far-field noise reduction and a more sensitive VAD, so the quieter phone voice still counts
+    as speech. ``prompt``: vocabulary for the transcriber (the call's goal: amounts, names), so
+    "sixty" is not heard as "fifty" on a thin phone voice."""
+    transcription: dict[str, Any] = {"model": model}
+    if prompt.strip():
+        transcription["prompt"] = " ".join(prompt.split())[:MAX_PROMPT_CHARS]
     inp: dict[str, Any] = {
         "format": {"type": "audio/pcm", "rate": 24000},
-        "noise_reduction": {"type": "near_field"},
-        "transcription": {"model": model},
+        "noise_reduction": {"type": "far_field" if far_field else "near_field"},
+        "transcription": transcription,
     }
-    inp["turn_detection"] = ({"type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 300,
-                              "silence_duration_ms": SILENCE_MS}
+    inp["turn_detection"] = ({"type": "server_vad",
+                              "threshold": FAR_FIELD_VAD if far_field else 0.5,
+                              "prefix_padding_ms": 300, "silence_duration_ms": SILENCE_MS}
                              if uses_server_vad(model) else None)
     return {"type": "session.update", "session": {"type": "transcription",
                                                   "audio": {"input": inp}}}
@@ -93,8 +132,12 @@ class Transcriber:
 
     def __init__(self, role: str, *, connect: SttConnect, model: str,
                  on_final: Callable[[str, str], Awaitable[None]],
-                 on_partial: Callable[[str, str], Awaitable[None]] | None = None) -> None:
+                 on_partial: Callable[[str, str], Awaitable[None]] | None = None,
+                 far_field: bool = False, prompt: str = "") -> None:
         self.role = role
+        self.far_field = far_field
+        self.prompt = prompt
+        self._agc = Agc() if far_field else None
         self._connect = connect
         self.model = model
         self.on_final = on_final
@@ -111,7 +154,8 @@ class Transcriber:
     async def start(self) -> bool:
         try:
             self._conn = await self._connect(self.role)
-            await self._conn.send(session_update(self.model))
+            await self._conn.send(session_update(self.model, far_field=self.far_field,
+                                                 prompt=self.prompt))
         except Exception as exc:  # noqa: BLE001 - never leak details (headers carry the key)
             self.failed = type(exc).__name__
             log.warning("ghost stt %s could not connect (%s)", self.role, self.failed)
@@ -140,6 +184,8 @@ class Transcriber:
             commit = self._client_vad and self._vad(chunk)
             if frames >= SEND_EVERY_FRAMES or commit:
                 pcm = audio.ulaw_to_pcm24k(bytes(buf))
+                if self._agc is not None:
+                    pcm = self._agc(pcm)
                 buf.clear()
                 frames = 0
                 try:

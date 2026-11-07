@@ -2,6 +2,8 @@
 
     python scripts/e2e_call.py            # the ISP haggling call
     python scripts/e2e_call.py --fresh    # re-synthesize the voices
+    python scripts/e2e_call.py --room     # speakerphone mode: both voices into one mic, the
+                                          # other side sounding like a phone on speaker
 
 What it does, exactly like the two browser pages would:
 1. Synthesizes every line of a scripted call with OpenAI TTS, a different voice per side.
@@ -61,6 +63,7 @@ CALL = [
     ("them", "Done. Your confirmation number is N F 2 2 9 1."),
 ]
 SPEAK_AFTER_LINE = 6  # tap Speak hint in the pause after this line (the $60 offer)
+ROOM = False  # --room: speakerphone mode, both voices reach one microphone
 
 
 def log(msg: str) -> None:
@@ -97,8 +100,34 @@ async def synthesize(client, fresh: bool) -> list[bytes]:
         if fresh or not path.exists():
             pcm = await client.tts(text, voice=VOICES[role], style=STYLES[role], timeout=30)
             path.write_bytes(pcm)
-        out.append(audio.pcm24k_to_ulaw(path.read_bytes()))
+        pcm = path.read_bytes()
+        if ROOM and role == "them":
+            pcm = phone_speaker(pcm)
+        out.append(audio.pcm24k_to_ulaw(pcm))
     return out
+
+
+def phone_speaker(pcm: bytes, gain: float = 0.6, hiss: float = 40.0) -> bytes:
+    """Make a clip sound like a phone on speaker a foot away: the telephone band (300-3400 Hz),
+    a few dB quieter than the user, and a little room hiss."""
+    import array
+    import math
+    import random
+
+    a = array.array("h")
+    a.frombytes(pcm)
+    dt = 1.0 / 24000
+    rc_hp, rc_lp = 1 / (2 * math.pi * 300), 1 / (2 * math.pi * 3400)
+    k_hp, k_lp = rc_hp / (rc_hp + dt), dt / (rc_lp + dt)
+    rng = random.Random(7)
+    out = array.array("h")
+    x_prev = hp = lp = 0.0
+    for v in a:
+        hp = k_hp * (hp + v - x_prev)  # one-pole high-pass at 300 Hz
+        x_prev = v
+        lp += k_lp * (hp - lp)  # one-pole low-pass at 3400 Hz
+        out.append(int(max(-32768, min(32767, lp * gain + rng.gauss(0, hiss)))))
+    return out.tobytes()
 
 
 async def transcribe(http, key: str, wav: bytes) -> str:
@@ -231,7 +260,8 @@ async def run(fresh: bool) -> int:
     ctx = RecordingCtx({"user_name": "Winch"})
     service = tools.configure(ctx=ctx)
     scenario = dev_demo.SCENARIOS["isp"]
-    out = service.start(goal=scenario["goal"], callee_label="Northwind Fiber retention")
+    out = service.start(goal=scenario["goal"], callee_label="Northwind Fiber retention",
+                        mode="room" if ROOM else "web")
     if not out.get("ok"):
         log(f"start failed: {out}")
         return 1
@@ -239,13 +269,19 @@ async def run(fresh: bool) -> int:
 
     report: dict = {"session": out["session_id"], "lines": []}
     async with httpx.AsyncClient(timeout=30) as http:
-        you, them = Leg("you", out["links"]["you"]), Leg("them", out["links"]["them"])
+        you = Leg("you", out["links"]["you"])
         await you.join(http)
-        await them.join(http)
         stop = asyncio.Event()
-        tasks = [asyncio.create_task(x) for x in
-                 (you.pump(stop), them.pump(stop), you.listen(), them.listen())]
-        legs = {"you": you, "them": them}
+        if ROOM:  # one microphone hears both: the phone on speaker and the user
+            them = Leg("them", "")
+            tasks = [asyncio.create_task(x) for x in (you.pump(stop), you.listen())]
+            legs = {"you": you, "them": you}
+        else:
+            them = Leg("them", out["links"]["them"])
+            await them.join(http)
+            tasks = [asyncio.create_task(x) for x in
+                     (you.pump(stop), them.pump(stop), you.listen(), them.listen())]
+            legs = {"you": you, "them": them}
         await asyncio.sleep(2.0)  # both joined, STT sockets open
 
         whisper_requested_at = None
@@ -308,10 +344,11 @@ async def run(fresh: bool) -> int:
     lines = report["lines"]
     for i, line in enumerate(lines):
         # every final caption of this speaker from this line's start to their next line's start
-        nxt = next((ln["began"] for ln in lines[i + 1:] if ln["role"] == line["role"]),
+        # (room mode: one unlabelled stream, so any caption up to the next line counts)
+        nxt = next((ln["began"] for ln in lines[i + 1:] if ROOM or ln["role"] == line["role"]),
                    float("inf"))
         parts = [m.get("text", "") for t, m in captions
-                 if m.get("role") == line["role"] and line["began"] <= t < nxt]
+                 if (ROOM or m.get("role") == line["role"]) and line["began"] <= t < nxt]
         heard = " ".join(parts)
         score = likeness(line["text"], heard)
         stt_scores.append(score)
@@ -352,12 +389,15 @@ async def run(fresh: bool) -> int:
         "at least 2 hints arrived": len(hints) >= 2,
         "whisper audio says the hint": bool(whisper_text) and
             likeness(whispers[0][1].get("text", ""), whisper_text) >= 0.6,
-        "Them socket got only peer/ended events besides audio":
-            set(them_saw) <= {"peer", "ended"},
-        "no hint text in what Them heard": not leaked,
         "one summary posted": sum(m.text.startswith("👻 Ghost call ended")
                                   for m in ctx.posts) == 1,
     }
+    if ROOM:
+        checks["no audio sent back to the page (nothing relayed)"] = not you.heard
+    else:
+        checks["Them socket got only peer/ended events besides audio"] = \
+            set(them_saw) <= {"peer", "ended"}
+        checks["no hint text in what Them heard"] = not leaked
     print("\n================ CHECKS ================")
     for name, ok in checks.items():
         print(f"  {'PASS' if ok else 'FAIL'}  {name}")
@@ -374,6 +414,8 @@ def main() -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
     dev_demo.load_demo_env(ROOT / "demo.env")
+    global ROOM
+    ROOM = "--room" in sys.argv
     return asyncio.run(run(fresh="--fresh" in sys.argv))
 
 

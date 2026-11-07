@@ -142,6 +142,9 @@ def intervene_refusal(session: dict | None, *, unattended: bool) -> str:
         return "no such ghost session."
     if session.get("state") != "live":
         return "the ghost session is not live."
+    if session.get("mode") == "room":
+        return ("speakerphone (room) mode has no line to the other party; Ghost can only "
+                "whisper to you.")
     if not session.get("intervene_allowed"):
         return (f"Intervene is off for {session['id']}. Only the user can turn it on, by typing "
                 f"/ghost intervene allow {session['id']}.")

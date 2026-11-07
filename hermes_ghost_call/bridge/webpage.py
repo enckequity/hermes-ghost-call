@@ -93,6 +93,7 @@ APP_JS = r"""
   const body = document.body;
   const role = body.getAttribute('data-role');
   const sid = body.getAttribute('data-sid');
+  const room = body.getAttribute('data-room') === '1';  // speakerphone: no other page
   const token = new URLSearchParams(location.search).get('t') || '';
   let ac = null, ws = null, stream = null, proc = null, src = null;
   let playHead = 0, sources = [], over = false, wake = null, muteUntil = 0, whispering = 0;
@@ -165,7 +166,7 @@ APP_JS = r"""
   function caption(m) {
     const c = $('caption');
     if (!c) return;
-    c.textContent = (m.role === 'them' ? 'them: ' : 'you: ') + m.text;
+    c.textContent = (m.role === 'call' ? '' : m.role === 'them' ? 'them: ' : 'you: ') + m.text;
     c.className = 'caption' + (m.final ? '' : ' partial');
   }
   function notice(t) {
@@ -195,8 +196,11 @@ APP_JS = r"""
     ws.onopen = () => {
       send({ event: 'start', token: info.media_token });
       startMic();
-      status(role === 'you' ? 'Connected. Waiting for the other side…' : 'Connected. Waiting for the caller…');
-      $('dot').className = 'dot wait';
+      if (room) { status('Listening to the call on speaker.'); $('dot').className = 'dot on'; }
+      else {
+        status(role === 'you' ? 'Connected. Waiting for the other side…' : 'Connected. Waiting for the caller…');
+        $('dot').className = 'dot wait';
+      }
       show('hang', true); show('controls', role === 'you');
     };
     ws.onmessage = (ev) => {
@@ -223,8 +227,10 @@ APP_JS = r"""
       const resumed = ac.resume();
       const unlock = ac.createBufferSource();
       unlock.buffer = ac.createBuffer(1, 1, 22050); unlock.connect(ac.destination); unlock.start(0);
-      stream = await navigator.mediaDevices.getUserMedia({ audio: {
-        echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      // Room mode hears a phone loudspeaker: noise suppression would eat its voice.
+      stream = await navigator.mediaDevices.getUserMedia({ audio: room
+        ? { echoCancellation: false, noiseSuppression: false, autoGainControl: true }
+        : { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
       await resumed;
       try { if (navigator.wakeLock) wake = await navigator.wakeLock.request('screen'); } catch (e) {}
       status('Connecting…');
@@ -299,11 +305,14 @@ def _page(*, title: str, body_attrs: str, content: str, nonce: str) -> str:
             f"<script nonce=\"{nonce}\">{CODEC_JS}{APP_JS}</script></body></html>")
 
 
-def render_you(*, sid: str, goal: str, callee_label: str, nonce: str, tap_mode: bool = False
-               ) -> str:
+def render_you(*, sid: str, goal: str, callee_label: str, nonce: str, tap_mode: bool = False,
+               room: bool = False) -> str:
     other = escape(callee_label or "the other side")
     hint_note = ("Tap Hint whenever you want one." if tap_mode
                  else "Hints stream in as they talk. Tap one to hear it.")
+    if room:
+        return _page(title="Ghost Call", body_attrs=_attrs(sid, "you") + ' data-room="1"',
+                     content=_room_content(goal, hint_note), nonce=nonce)
     content = f"""
 <h1>Ghost Call</h1>
 <p class="sub">Goal: {escape(goal)}</p>
@@ -325,6 +334,29 @@ silence while one plays, so {other} never hears Ghost.</div>
 """
     return _page(title="Ghost Call", body_attrs=_attrs(sid, "you"), content=content,
                  nonce=nonce)
+
+
+def _room_content(goal: str, hint_note: str) -> str:
+    """Speakerphone mode: the call runs on the phone; this page only listens and shows hints."""
+    return f"""
+<h1>Ghost Call</h1>
+<p class="sub">Goal: {escape(goal)}</p>
+<div class="badge"><span id="dot" class="dot"></span>
+  <span>Ghost listens through this mic. It never joins the call.</span></div>
+<div class="card warn">Put your phone call on speaker next to this device. Hints show here.
+If you tap Speak hint, wear headphones on this device, or the phone will hear the whisper.</div>
+<button id="join" class="primary">Start listening</button>
+<p id="status">Tap Start listening when the call begins.</p>
+<p id="notice" hidden></p>
+<div id="controls" hidden>
+  <div class="card"><p id="latest"></p><p id="caption" class="caption"></p></div>
+  <div class="row"><button id="speak">Speak hint</button><button id="hint">Hint</button></div>
+  <label class="mute"><input type="checkbox" id="mute"> Pause listening</label>
+  <div class="card"><p class="sub tight">{escape(hint_note)}</p>
+    <ul id="hints"></ul></div>
+</div>
+<button id="hang" class="end" hidden>End</button>
+"""
 
 
 def render_them(*, sid: str, caller: str, nonce: str) -> str:

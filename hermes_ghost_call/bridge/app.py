@@ -38,6 +38,7 @@ MAX_BODY = 2048
 MAX_FRAME_BYTES = 4000  # one media message; a 20 ms frame is 160 bytes
 START_TIMEOUT_S = 10.0
 JANITOR_S = 1.0
+PAGE_MODES = ("web", "room")  # modes served by browser pages (room: the You page only)
 
 
 def _headers(settings: BridgeSettings, nonce: str = "") -> dict[str, str]:
@@ -234,7 +235,10 @@ def create_app(settings: BridgeSettings, *, store: Store | None = None,
         if len(sid) > 32 or role not in ROLES or not token or len(token) > 128:
             return None
         session = the_store.get_session(sid)
-        if session is None or session["mode"] != "web" or session["state"] not in ACTIVE_STATES:
+        if session is None or session["mode"] not in PAGE_MODES or \
+                session["state"] not in ACTIVE_STATES:
+            return None
+        if session["mode"] == "room" and role != "you":  # speakerphone: one page only
             return None
         if session.get("hangup_requested"):
             return None
@@ -258,7 +262,8 @@ def create_app(settings: BridgeSettings, *, store: Store | None = None,
         if role == "you":
             html = webpage.render_you(sid=sid, goal=session["goal"],
                                       callee_label=session.get("callee_label", ""), nonce=nonce,
-                                      tap_mode=cfg.get("hint_mode") == "tap")
+                                      tap_mode=cfg.get("hint_mode") == "tap",
+                                      room=session["mode"] == "room")
         else:
             html = webpage.render_them(sid=sid, caller=str(cfg.get("user_name") or ""),
                                        nonce=nonce)
@@ -287,7 +292,8 @@ def create_app(settings: BridgeSettings, *, store: Store | None = None,
         await ws.accept()
         token = await _await_start_token(ws)
         session = the_store.get_session(sid) if role in ROLES else None
-        if (token is None or session is None or session["mode"] != "web"
+        if (token is None or session is None or session["mode"] not in PAGE_MODES
+                or (session["mode"] == "room" and role != "you")
                 or session["state"] not in ACTIVE_STATES
                 or not the_store.consume_token(sid, role, "media", token)):
             await _close(ws, 1008)

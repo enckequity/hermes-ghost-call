@@ -12,7 +12,8 @@ from dataclasses import dataclass, field
 MODE_ENV = "HERMES_GHOST_MODE"
 TWILIO = "twilio"
 WEB = "web"
-MODES = (WEB, TWILIO)
+ROOM = "room"  # speakerphone: one page, one mic hears both sides of any call; never automatic
+MODES = (WEB, TWILIO, ROOM)
 WEB_ENV = ("OPENAI_API_KEY", "PUBLIC_BASE_URL")
 TWILIO_ENV = ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER", "PUBLIC_BASE_URL")
 
@@ -38,6 +39,8 @@ def resolve(environ: Mapping[str, str], requested: str = "", *, has_numbers: boo
         twilio_missing.append("user_number config + callee_number")
     if want == WEB:
         return Mode(WEB, web_missing, "explicit")
+    if want == ROOM:
+        return Mode(ROOM, web_missing, "explicit")
     if want == TWILIO:
         if not twilio_missing:
             return Mode(TWILIO, [], "explicit")
