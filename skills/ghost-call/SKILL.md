@@ -35,5 +35,5 @@ hints to the user's chat and their own call page; nothing reaches the other part
 
 ## Commands the user can type
 
-`/ghost start <goal>` · `/ghost status` · `/ghost speak [hint]` · `/ghost intervene allow|deny`
+`/ghost start [room|+number] <goal>` · `/ghost status` · `/ghost speak [hint]` · `/ghost intervene allow|deny`
 · `/ghost hangup` · `/ghost transcript` · `/ghost log` · `/ghost check`

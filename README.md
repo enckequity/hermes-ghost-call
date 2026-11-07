@@ -64,10 +64,20 @@ server VAD closes an utterance after ~500 ms of silence, the gate is pure Python
 model (default `gpt-4.1-mini`, temperature 0.2, ≤ 60 tokens) has a hard 2.5 s timeout. A slow
 hint is skipped, never queued. Partial transcripts only update the caption on your page.
 
-**Two modes.** *Web* (default): two browser pages, audio relayed by the bridge. *Twilio*: Twilio
-rings your phone, then the callee, into one conference; each leg forks its inbound audio to the
-bridge with a receive-only `<Start><Stream>`. Whispers are conference announcements to your leg
-only. If Twilio config is incomplete, sessions fall back to web mode automatically.
+**Three modes.** *Web* (default): two browser pages, audio relayed by the bridge. *Twilio*
+(`/ghost start +15551234567 <goal>`): Twilio rings your phone, then the callee, into one
+conference; each leg forks its inbound audio to the bridge with a receive-only
+`<Start><Stream>`. Whispers are conference announcements to your leg only. If Twilio config is
+incomplete, sessions fall back to web mode automatically. Setup: [docs/TWILIO.md](docs/TWILIO.md).
+*Room* (`/ghost start room <goal>`): any call you already make (phone, WhatsApp, Telegram) on
+speaker next to a laptop; one listening page hears both sides through its mic, nothing is
+relayed, and Intervene is impossible. The bridge uses far-field noise reduction, a more sensitive
+VAD and automatic gain there, because the phone speaker is quieter than you. Speakers are
+unlabelled in this mode, so the hint model works out who said what from the content.
+
+**Transcription vocabulary.** Each STT session gets the names and amounts from the goal as a
+bare word list (never its sentences), which fixes "sixty" heard as "fifty" on a thin phone voice.
+A transcript that is mostly that list (the model echoing its prompt on noise) is dropped.
 
 ## Ghost Call vs hermes-phone
 
@@ -143,7 +153,9 @@ python -m venv .venv; .venv\Scripts\pip install -e . -r requirements-dev.txt
 
 Ready-made scenarios: `scripts/dev_demo.py isp` (haggle with the internet provider for a
 discount) and `scripts/dev_demo.py table`. Each prints a cheat sheet for whoever plays the other
-party; the full scripts are in [docs/DEMO.md](docs/DEMO.md).
+party; the full scripts are in [docs/DEMO.md](docs/DEMO.md). Add `room` for speakerphone mode
+(`dev_demo.py isp room`) or the other party's number for Twilio mode (`dev_demo.py isp
++972XXXXXXXXX --public`, see [docs/TWILIO.md](docs/TWILIO.md)).
 
 Single quotes keep the shell from expanding `$80`. The demo (only the demo, never the plugin) also
 reads `OPENAI_API_KEY`, `PUBLIC_BASE_URL` and `GHOST_USER_NAME` from a git-ignored `demo.env` in
@@ -168,6 +180,11 @@ nothing but audio, no hint text in what Them heard, exactly one summary. A run t
 and a few cents. Last run (2026-11-07): all six checks passed, hints 1.4-1.8 s after the other
 party's line, whisper 1.4-2.0 s after the tap.
 
+`python scripts/e2e_call.py --room` runs the same call in speakerphone mode: both voices go into
+one microphone, the far side band-limited to 300-3400 Hz and quieter, like a phone on speaker.
+Without the far-field settings the transcriber heard 0 of the 6 phone lines; with them, all 6,
+and the summary reads "$60/month for 12 months, no contract".
+
 ## Tools, commands, hooks
 
 | Tool | What it does |
@@ -180,7 +197,7 @@ party's line, whisper 1.4-2.0 s after the tap.
 | `ghost_hangup` | End within ~1 s, even if the bridge is gone |
 | `ghost_summary` | The post-call summary (also auto-posted once) |
 
-`/ghost start <goal>` · `status [id]` · `speak [hint]` · `intervene allow|deny [id]` ·
+`/ghost start [room|+number] <goal>` · `status [id]` · `speak [hint]` · `intervene allow|deny [id]` ·
 `hangup [id]` · `transcript [id]` · `log [n]` · `check`
 
 Hook: `pre_tool_call` blocks `ghost_intervene` without the allow and under cron/unattended
