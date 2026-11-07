@@ -67,6 +67,18 @@ def load_demo_env(path: Path, environ=os.environ) -> None:
             environ[key] = value
 
 
+def port_free(host: str, port: int) -> bool:
+    """True when nothing listens on host:port (checked before uvicorn, which would hang us)."""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
 async def rehearse(bridge, service, role: str, text: str) -> str:
     """Feed one typed line into the live session as if it had been transcribed from the call.
 
@@ -146,6 +158,14 @@ def main() -> int:
     if settings.missing_env():
         print("note: missing " + ", ".join(settings.missing_env()) +
               " (the call works; transcription and hints need OPENAI_API_KEY)")
+    if not port_free(settings.host, settings.port):
+        print(f"Port {settings.port} is already in use, most likely by an earlier demo that is "
+              "still running. Close that terminal or stop it:\n"
+              f"  Get-NetTCPConnection -LocalPort {settings.port} -State Listen | "
+              "ForEach-Object { Stop-Process -Id $_.OwningProcess }\n"
+              "or use another port: set PUBLIC_BASE_URL=http://localhost:8767 in demo.env.",
+              flush=True)
+        return 1
     app = create_app(settings)
     server = uvicorn.Server(uvicorn.Config(app, host=settings.host, port=settings.port,
                                            log_level="warning"))

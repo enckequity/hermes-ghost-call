@@ -71,3 +71,14 @@ def test_messages_point_at_their_latest_line():
     msgs = hints.build_messages(goal="lower my bill", callee_label="", turns=turns,
                                 previous_hints=[])
     assert "REACT TO THEIR LATEST LINE: I can waive the router fee" in msgs[1]["content"]
+
+
+def test_port_free_sees_a_listener():
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as busy:
+        busy.bind(("127.0.0.1", 0))
+        busy.listen(1)
+        port = busy.getsockname()[1]
+        assert _demo().port_free("127.0.0.1", port) is False
+    assert _demo().port_free("127.0.0.1", port) is True
