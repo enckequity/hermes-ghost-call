@@ -120,3 +120,32 @@ def test_same_advice_reworded_after_a_new_line_is_dropped():
                             "fees.", prev) is None
     assert hints.clean_hint("they gave NF-2291 → ask if the price rises after 12 months",
                             prev) is not None
+
+
+def test_demo_args_in_any_order():
+    demo = _demo()
+    o = demo.parse_args(["isp", "+972501234567", "https://abc-def.example.com/"])
+    assert o["scenario"] is demo.SCENARIOS["isp"] and o["callee"] == "+972501234567"
+    assert o["public"] == "https://abc-def.example.com" and not o["room"]
+    assert o["goal"] == demo.SCENARIOS["isp"]["goal"]
+    o = demo.parse_args(["room", "ask", "the", "landlord", "to", "fix", "the", "heating"])
+    assert o["room"] and o["goal"] == "ask the landlord to fix the heating"
+    assert demo.parse_args([])["goal"] == demo.SCENARIOS["table"]["goal"]
+
+
+def test_local_port_only_for_localhost():
+    demo = _demo()
+    assert demo.local_port("http://localhost:8767") == 8767
+    assert demo.local_port("https://abc.example.com") is None
+
+
+def test_prepare_twilio_reports_what_is_missing():
+    demo = _demo()
+    env = {"PUBLIC_BASE_URL": "http://localhost:8766"}
+    assert "TWILIO_ACCOUNT_SID" in demo.prepare_twilio("+972501234567", env)
+    env.update({"TWILIO_ACCOUNT_SID": "AC1", "TWILIO_AUTH_TOKEN": "t",
+                "TWILIO_FROM_NUMBER": "+15550001111", "GHOST_USER_NUMBER": "+972500000001"})
+    assert "public HTTPS" in demo.prepare_twilio("+972501234567", env)
+    env["PUBLIC_BASE_URL"] = "https://abc.example.com"
+    assert demo.prepare_twilio("+972501234567", env) == ""
+    assert env["HERMES_GHOST_TEST_ALLOWLIST"] == "+972500000001,+972501234567"

@@ -155,7 +155,7 @@ Ready-made scenarios: `scripts/dev_demo.py isp` (haggle with the internet provid
 discount) and `scripts/dev_demo.py table`. Each prints a cheat sheet for whoever plays the other
 party; the full scripts are in [docs/DEMO.md](docs/DEMO.md). Add `room` for speakerphone mode
 (`dev_demo.py isp room`) or the other party's number for Twilio mode (`dev_demo.py isp
-+972XXXXXXXXX --public`, see [docs/TWILIO.md](docs/TWILIO.md)).
++972XXXXXXXXX https://your-public-address`, see [docs/TWILIO.md](docs/TWILIO.md)).
 
 Single quotes keep the shell from expanding `$80`. The demo (only the demo, never the plugin) also
 reads `OPENAI_API_KEY`, `PUBLIC_BASE_URL` and `GHOST_USER_NAME` from a git-ignored `demo.env` in

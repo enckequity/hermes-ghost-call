@@ -17,14 +17,21 @@ turn on Intervene, and then it says it is an AI first.
 3. **Voice geo permissions** for the country you call: *Voice > Settings > Geo permissions*
    (for example, tick Israel to call +972 numbers).
 4. **Your Account SID and Auth Token** from the Twilio console home page.
-5. **A public HTTPS address for the bridge**, so Twilio can reach it. The demo can open one with
-   cloudflared (free, no account):
+5. **A public HTTPS address for the bridge**, so Twilio can reach it. cloudflared gives one for
+   free, without an account. Install it once:
 
    ```powershell
    winget install --id Cloudflare.cloudflared
    ```
 
-   Open a new terminal afterwards so `cloudflared` is on the PATH.
+   Then, in a **second** terminal (leave it open during the call):
+
+   ```powershell
+   cloudflared tunnel --url http://127.0.0.1:8766
+   ```
+
+   It prints an address like `https://some-words.trycloudflare.com`. It changes every time you
+   start it.
 
 ## demo.env
 
@@ -39,11 +46,13 @@ GHOST_USER_NUMBER=+972...       # your own mobile: Twilio rings it first
 
 ## Run
 
+In the first terminal:
+
 ```powershell
-.venv\Scripts\python scripts\dev_demo.py isp +972XXXXXXXXX --public
+.venv\Scripts\python scripts\dev_demo.py isp +972XXXXXXXXX https://some-words.trycloudflare.com
 ```
 
-`+972XXXXXXXXX` is the other party. `--public` starts cloudflared and uses its HTTPS address.
+`+972XXXXXXXXX` is the other party; the `https://` address is the one from the second terminal.
 The demo sets the dialing allowlist to exactly your phone and that number for this run
 (emergency, short and premium numbers are always refused). Then:
 

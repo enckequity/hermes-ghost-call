@@ -71,8 +71,8 @@ def load_demo_env(path: Path, environ=os.environ) -> None:
 
 
 def parse_args(args: list[str]) -> dict:
-    """``[table|isp] [room] [+E164] [--public] [free-text goal]`` in any order."""
-    out: dict = {"scenario": None, "room": False, "callee": "", "public": False, "goal": ""}
+    """``[table|isp] [room] [+E164] [https://public-address] [free-text goal]``, any order."""
+    out: dict = {"scenario": None, "room": False, "callee": "", "public": "", "goal": ""}
     rest = []
     for arg in args:
         low = arg.strip().lower()
@@ -80,8 +80,8 @@ def parse_args(args: list[str]) -> dict:
             out["scenario"] = SCENARIOS[low]
         elif low in ("room", "speaker", "--room"):
             out["room"] = True
-        elif low == "--public":
-            out["public"] = True
+        elif re.fullmatch(r"https://[\w.-]+(?::\d+)?/?", arg.strip()):
+            out["public"] = arg.strip().rstrip("/")
         elif re.fullmatch(r"\+\d{6,15}", arg.strip()):
             out["callee"] = arg.strip()
         else:
@@ -116,50 +116,12 @@ def prepare_twilio(callee: str, environ=os.environ) -> str:
                 ". See docs/TWILIO.md.")
     url = environ.get("PUBLIC_BASE_URL", "")
     if not url.startswith("https://"):
-        return ("Twilio must reach the bridge over public HTTPS. Run with --public (needs "
-                "cloudflared) or set PUBLIC_BASE_URL=https://... in demo.env. See docs/TWILIO.md.")
+        return ("Twilio must reach the bridge over public HTTPS: pass the bridge's public "
+                "https:// address after the number. See docs/TWILIO.md.")
     if not environ.get("HERMES_GHOST_TEST_ALLOWLIST", "").strip():
         environ["HERMES_GHOST_TEST_ALLOWLIST"] = f"{environ['GHOST_USER_NUMBER']},{callee}"
         print("Dialing allowlist for this run: your phone and " + callee, flush=True)
     return ""
-
-
-def open_public_url(port: int, timeout_s: float = 40.0):
-    """Start a cloudflared quick URL for the bridge; returns (process, https URL) or None."""
-    import shutil
-    import subprocess
-
-    exe = shutil.which("cloudflared")
-    if not exe:
-        print("--public needs cloudflared. Install it once:\n"
-              "  winget install --id Cloudflare.cloudflared\n"
-              "then open a new terminal and run the demo again.", flush=True)
-        return None
-    proc = subprocess.Popen([exe, "tunnel", "--no-autoupdate", "--url",
-                             f"http://127.0.0.1:{port}"], stdout=subprocess.DEVNULL,
-                            stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                            errors="replace")
-    found: dict = {}
-
-    def watch() -> None:
-        for line in proc.stderr:
-            m = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", line)
-            if m and "url" not in found:
-                found["url"] = m.group(0)
-            if "Registered" in line and "url" in found:
-                found["ready"] = True
-
-    threading.Thread(target=watch, daemon=True).start()
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline and not found.get("ready"):
-        time.sleep(0.2)
-    if not found.get("url"):
-        proc.terminate()
-        print("cloudflared did not give a public URL in time.", flush=True)
-        return None
-    time.sleep(2.0)  # the new hostname needs a moment before Twilio can resolve it
-    print(f"Public URL for Twilio: {found['url']}", flush=True)
-    return proc, found["url"]
 
 
 def port_free(host: str, port: int) -> bool:
@@ -232,12 +194,8 @@ def main() -> int:
     port = int(os.environ.get("HERMES_GHOST_BRIDGE_PORT") or local_port(
         os.environ.get("PUBLIC_BASE_URL", "")) or 8766)
     os.environ["HERMES_GHOST_BRIDGE_PORT"] = str(port)
-    public = None
-    if opts["public"]:
-        public = open_public_url(port)
-        if public is None:
-            return 1
-        os.environ["PUBLIC_BASE_URL"] = public[1]
+    if opts["public"]:  # the bridge's public https address, typed on the command line
+        os.environ["PUBLIC_BASE_URL"] = opts["public"]
     os.environ.setdefault("PUBLIC_BASE_URL", f"http://localhost:{port}")
     os.environ.setdefault("HERMES_GHOST_DB", str(Path(tempfile.gettempdir()) /
                                                  "hermes-ghost-demo.db"))
@@ -296,8 +254,6 @@ def main() -> int:
         if line in ("quit", "exit"):
             commands.ghost_command("hangup")
             time.sleep(1.0)
-            if public is not None:
-                public[0].terminate()
             return 0
         if line.startswith("say "):
             print(tools.HANDLERS["ghost_intervene"]({"text": line[4:]}))
