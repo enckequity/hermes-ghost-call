@@ -283,13 +283,25 @@ pip install -e . -r requirements-dev.txt
 ruff check . && pytest -q -m "not e2e"
 ```
 
-~190 unit tests, no network: the gate, rate limits and coalescing, the no-question invariant,
+220 unit tests, no network: the gate, rate limits and coalescing, the no-question invariant,
 Intervene blocked without allow and under cron, allowlist fail-closed, write-once summary,
-planted secret markers, websocket relay and who-hears-what. OpenAI and Twilio are mocked.
-The web flow was also driven end to end in headless Chromium with a fake microphone (relay both
-ways, whisper reached only the You page, one ticker message, one summary). A live call with real
-transcription and real hints is a manual test; Twilio mode is covered by mocks only. CI runs
-`hermes plugins validate` and `hermes plugins doctor --ci` against a pinned hermes-agent commit.
+planted secret markers, websocket relay and who-hears-what, room mode. OpenAI and Twilio are
+mocked. The web flow was also driven end to end in headless Chromium with a fake microphone
+(relay both ways, whisper reached only the You page, one ticker message, one summary).
+
+Live, with real OpenAI: `scripts/e2e_call.py` (web and `--room`) passes all its checks with two
+synthetic voices. Not yet run live: Twilio mode (mocks only), room mode with a real phone on a
+real speaker, and the plugin inside a running Hermes chat (CI runs `hermes plugins validate` and
+`hermes plugins doctor --ci` against a pinned hermes-agent commit, which loads it but places no
+call).
+
+`video/` holds the launch video pipeline. The call lines are voiced in ElevenLabs (two male
+voices, saved as `video/voices/lineNN.pcm`), then `scripts/e2e_call.py --clips video/voices
+--timeline video/timeline.json` runs the real test on those takes, so every caption, hint and
+summary on screen comes from it. `python video/build.py` lays narration, call and whisper end to
+end, `node video/render.mjs` renders the frames (playwright-core and ffmpeg) and
+`python video/voice_mix.py` adds the narrator. Script and timecodes: `video/SCRIPT.md`,
+`video/TIMECODES.txt`.
 
 Not in v0.1: screen OCR context (planned behind `HERMES_GHOST_SCREEN=1`), voice cloning (never),
 auto-playing every hint, a catalog entry. To list it later, open a PR to

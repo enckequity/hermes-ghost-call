@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ghost Call launch video</title>
+<style>
+__FONTS__
+:root { --bg:#0b0c0f; --panel:#121318; --line:#23262e; --text:#eceef3; --mute:#8a8f9c;
+  --dim:#5d6270; --accent:#9ab4ff; --ok:#4ccf8a; --warm:#f2b84b; }
+* { box-sizing:border-box; }
+html, body { margin:0; background:var(--bg); }
+body { width:1920px; height:1080px; overflow:hidden; color:var(--text);
+  font-family:"Inter", sans-serif; -webkit-font-smoothing:antialiased; }
+.scene { position:absolute; inset:0; opacity:0; }
+.center { display:flex; flex-direction:column; align-items:center; justify-content:center; }
+
+/* title + end */
+.ghost { width:120px; height:132px; }
+.ghost path, .ghost circle { stroke:var(--text); stroke-width:3.2; fill:none; }
+.ghost circle { fill:var(--text); stroke:none; }
+.word { font-size:112px; font-weight:600; letter-spacing:-.035em; margin:34px 0 0; }
+.tag { font-size:30px; color:var(--mute); font-weight:400; margin:18px 0 0; letter-spacing:-.01em; }
+.url { font-size:26px; color:var(--dim); margin:46px 0 0; font-weight:500; letter-spacing:.005em; }
+
+/* chat window */
+.win { position:absolute; left:320px; top:250px; width:1280px; background:var(--panel);
+  border:1px solid var(--line); border-radius:22px; overflow:hidden; }
+.bar { height:58px; border-bottom:1px solid var(--line); display:flex; align-items:center;
+  padding:0 26px; gap:12px; font-size:19px; color:var(--mute); font-weight:500; }
+.bar b { color:var(--text); font-weight:600; }
+.msgs { padding:34px 44px 44px; font-size:25px; line-height:1.5; }
+.me { color:var(--text); font-weight:500; white-space:pre-wrap; word-break:break-word; }
+.me .cmd { color:var(--accent); }
+.caret { display:inline-block; width:3px; height:1.05em; background:var(--accent);
+  vertical-align:-0.15em; margin-left:2px; }
+.bot { margin:30px 0 0; padding:24px 28px; border:1px solid var(--line); border-radius:16px;
+  background:#0f1014; font-size:23px; line-height:1.55; }
+.bot p { margin:0 0 10px; } .bot p:last-child { margin:0; }
+.bot .k { color:var(--mute); }
+.bot .lnk { color:var(--accent); }
+.mini { display:inline-block; width:26px; height:29px; vertical-align:-5px; margin-right:8px; }
+.mini path { stroke:var(--text); stroke-width:6; fill:none; } .mini circle { fill:var(--text); }
+
+/* call */
+.col { position:absolute; top:58px; width:600px; }
+.col .lab { font-size:22px; color:var(--mute); font-weight:500; height:40px; letter-spacing:-.005em; }
+.col .lab b { color:var(--text); font-weight:600; }
+.frame { width:600px; height:880px; border:1px solid var(--line); border-radius:26px;
+  overflow:hidden; background:#0e0f12; position:relative; }
+.frame iframe { border:0; width:580px; height:851px; transform:scale(1.0345); transform-origin:0 0;
+  position:absolute; left:0; top:0; }
+.meter { margin:20px 0 0; height:46px; display:flex; align-items:center; gap:16px; }
+.meter .ml { font-size:19px; color:var(--mute); width:210px; font-weight:500; }
+.bars { display:flex; align-items:center; gap:3px; height:46px; flex:1; }
+.bars i { display:block; width:4px; border-radius:2px; background:var(--dim); height:2px; }
+.bars.hot i { background:var(--accent); }
+.tap { position:absolute; width:90px; height:90px; border-radius:50%;
+  border:2px solid rgba(236,238,243,.85); background:rgba(236,238,243,.12); opacity:0;
+  transform:translate(-50%,-50%); }
+.note { position:absolute; font-size:21px; color:var(--warm); font-weight:500; opacity:0; }
+
+/* summary */
+.price { position:absolute; left:320px; top:250px; font-size:46px; font-weight:600;
+  letter-spacing:-.02em; }
+.price .was { color:var(--dim); text-decoration:line-through; text-decoration-thickness:3px; }
+.price .arrow { color:var(--mute); margin:0 18px; font-weight:400; }
+.sum p { opacity:0; }
+
+/* modes */
+.cards { position:absolute; left:120px; right:120px; top:330px; display:flex; gap:44px; }
+.card { flex:1; height:420px; background:var(--panel); border:1px solid var(--line); border-radius:24px;
+  padding:44px 40px; opacity:0; display:flex; flex-direction:column; }
+.card svg { width:84px; height:84px; margin:0 0 34px; }
+.card svg * { stroke:var(--text); stroke-width:2.4; fill:none; stroke-linecap:round; stroke-linejoin:round; }
+.card h2 { font-size:38px; font-weight:600; margin:0 0 16px; letter-spacing:-.02em; }
+.card p { font-size:24px; color:var(--mute); margin:0; line-height:1.45; }
+.card code { margin-top:auto; font-family:"Inter", sans-serif; font-size:22px; color:var(--accent);
+  font-weight:500; }
+.htitle { position:absolute; left:120px; top:250px; font-size:30px; color:var(--mute); font-weight:500; }
+#fade { position:absolute; inset:0; background:#000; pointer-events:none; }
+</style>
+</head>
+<body>
+
+<div class="scene center" id="s-title">
+  <svg class="ghost" viewBox="0 0 100 110"><path d="M12 52 A38 38 0 0 1 88 52 L88 102 Q81.7 94 75.3 102 Q69 110 62.7 102 Q56.3 94 50 102 Q43.7 110 37.3 102 Q31 94 24.7 102 Q18.3 110 12 102 Z"/><circle cx="38" cy="54" r="5"/><circle cx="62" cy="54" r="5"/></svg>
+  <div class="word">Ghost Call</div>
+  <div class="tag">Your real-time AI assistant on every call.</div>
+  <div class="url">A plugin for Hermes Agent</div>
+</div>
+
+<div class="scene" id="s-chat">
+  <div class="win">
+    <div class="bar"><b>Hermes</b><span>chat</span></div>
+    <div class="msgs">
+      <div class="me" id="typed"></div>
+      <div class="bot" id="reply"></div>
+    </div>
+  </div>
+</div>
+
+<div class="scene" id="s-call">
+  <div class="col" style="left:300px">
+    <div class="lab"><b>Their page</b> · Northwind Fiber</div>
+    <div class="frame"><iframe id="them" scrolling="no"></iframe></div>
+    <div class="meter"><span class="ml">Their speaker</span><span class="bars" id="m-them"></span></div>
+  </div>
+  <div class="col" style="left:1020px">
+    <div class="lab"><b>Your page</b> · Winch</div>
+    <div class="frame"><iframe id="you" scrolling="no"></iframe></div>
+    <div class="meter"><span class="ml">Your earpiece</span><span class="bars" id="m-you"></span></div>
+  </div>
+  <div class="tap" id="tap"></div>
+</div>
+
+<div class="scene" id="s-sum">
+  <div class="price"><span class="was">$89</span><span class="arrow">→</span>$60 a month</div>
+  <div class="win" style="top:360px">
+    <div class="bar"><b>Hermes</b><span>chat</span></div>
+    <div class="msgs"><div class="bot sum" id="sum" style="margin:0"></div></div>
+  </div>
+</div>
+
+<div class="scene" id="s-modes">
+  <div class="htitle">Three ways to listen</div>
+  <div class="cards">
+    <div class="card"><svg viewBox="0 0 84 84"><rect x="8" y="14" width="30" height="52" rx="5"/><rect x="46" y="14" width="30" height="52" rx="5"/><path d="M18 58h10M56 58h10"/></svg>
+      <h2>Two browser links</h2><p>You open yours with headphones. They open theirs.</p>
+      <code>/ghost start &lt;goal&gt;</code></div>
+    <div class="card"><svg viewBox="0 0 84 84"><path d="M24 10h36a4 4 0 0 1 4 4v56a4 4 0 0 1-4 4H24a4 4 0 0 1-4-4V14a4 4 0 0 1 4-4z"/><path d="M36 64h12"/><path d="M30 28c6-6 18-6 24 0M35 35c3.5-3.5 10.5-3.5 14 0"/></svg>
+      <h2>A real phone line</h2><p>Twilio rings you, then them, and joins both calls.</p>
+      <code>/ghost start +&lt;number&gt; &lt;goal&gt;</code></div>
+    <div class="card"><svg viewBox="0 0 84 84"><path d="M14 34h10l14-12v40L24 50H14z"/><path d="M50 32c4 5 4 15 0 20M58 26c8 9 8 23 0 32"/></svg>
+      <h2>Any call on speaker</h2><p>One page listens next to your phone. Nothing is relayed.</p>
+      <code>/ghost start room &lt;goal&gt;</code></div>
+  </div>
+</div>
+
+<div class="scene center" id="s-end">
+  <svg class="ghost" viewBox="0 0 100 110"><path d="M12 52 A38 38 0 0 1 88 52 L88 102 Q81.7 94 75.3 102 Q69 110 62.7 102 Q56.3 94 50 102 Q43.7 110 37.3 102 Q31 94 24.7 102 Q18.3 110 12 102 Z"/><circle cx="38" cy="54" r="5"/><circle cx="62" cy="54" r="5"/></svg>
+  <div class="word">Ghost Call</div>
+  <div class="tag">Your real-time AI copilot for every call.</div>
+  <div class="url">github.com/winchxyz/hermes-ghost-call</div>
+</div>
+
+<div id="fade"></div>
+
+<script>
+const D = __DATA__;
+const FPS = D.fps;
+const $ = (id) => document.getElementById(id);
+const clamp = (x) => Math.max(0, Math.min(1, x));
+const ease = (x) => { x = clamp(x); return x * x * (3 - 2 * x); };
+function vis(t, a, b, f) { f = f || 0.25; return ease((t - a) / f) * ease((b - t) / f); }
+function setText(el, s) { if (el.textContent !== s) el.textContent = s; }
+function esc(s) { return s.replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+const GLYPH = '<svg class="mini" viewBox="0 0 100 110"><path d="M12 52 A38 38 0 0 1 88 52 L88 102 Q81.7 94 75.3 102 Q69 110 62.7 102 Q56.3 94 50 102 Q43.7 110 37.3 102 Q31 94 24.7 102 Q18.3 110 12 102 Z"/><circle cx="38" cy="54" r="6"/><circle cx="62" cy="54" r="6"/></svg>';
+
+// ---- one-time setup ----------------------------------------------------------------------------
+const NB = 64;
+for (const id of ['m-them', 'm-you']) for (let i = 0; i < NB; i++) $(id).appendChild(document.createElement('i'));
+$('reply').innerHTML = D.reply.map((r) => '<p>' + r + '</p>').join('');
+$('sum').innerHTML = D.summary.map((r) => '<p>' + r + '</p>').join('');
+let docs = {};
+function loadFrames() {
+  return Promise.all(['you', 'them'].map((id) => new Promise((ok) => {
+    const f = $(id);
+    f.onload = () => { docs[id] = f.contentDocument; ok(); };
+    f.srcdoc = D.pages[id];
+  })));
+}
+
+// ---- the page states -----------------------------------------------------------------------------
+function pageState(t) {
+  const y = docs.you, th = docs.them;
+  if (!y || !th) return;
+  const ended = t >= D.hang + 0.35;
+  for (const doc of [y, th]) {
+    doc.getElementById('join').hidden = true;
+    doc.getElementById('hang').hidden = ended;
+    doc.getElementById('dot').className = 'dot ' + (ended ? 'off' : 'on');
+  }
+  setText(th.getElementById('status'), ended ? 'Call ended.' : 'On the call.');
+  setText(y.getElementById('status'), ended ? 'You hung up.' : 'On the call.');
+  y.getElementById('controls').hidden = ended;
+  const hs = D.hints.filter((h) => h.t <= t);
+  const latest = y.getElementById('latest');
+  const last = hs[hs.length - 1];
+  setText(latest, last ? last.text : '');
+  latest.style.opacity = last ? ease((t - last.t) / 0.35) : 1;
+  const list = y.getElementById('hints');
+  const want = hs.slice().reverse().map((h) => h.line).join('\n');
+  if (list.getAttribute('data-k') !== want) {
+    list.innerHTML = '';
+    for (const h of hs.slice().reverse()) { const li = y.createElement('li'); li.textContent = h.line; list.appendChild(li); }
+    list.setAttribute('data-k', want);
+  }
+  const cs = D.captions.filter((c) => c.t <= t);
+  const c = cs[cs.length - 1];
+  const cap = y.getElementById('caption');
+  setText(cap, c ? (c.role === 'them' ? 'them: ' : 'you: ') + c.text : '');
+  cap.style.opacity = c ? ease((t - c.t) / 0.3) : 1;
+  const mark = y.getElementById('priv');
+  if (mark) {
+    const a = vis(t, D.priv[0], D.priv[1], 0.6);
+    mark.style.background = 'rgba(242,184,75,' + (0.2 * a).toFixed(3) + ')';
+    mark.style.color = a > 0.02 ? 'rgb(' + Math.round(138 + (242 - 138) * a) + ',' + Math.round(143 + (220 - 143) * a) + ',' + Math.round(156 + (170 - 156) * a) + ')' : '';
+  }
+}
+
+function meters(t) {
+  const f = Math.round(t * FPS);
+  for (const [id, env, hot] of [['m-them', D.envThem, null], ['m-you', D.envYou, D.whisperSpan]]) {
+    const bars = $(id).children;
+    for (let i = 0; i < NB; i++) {
+      const k = f - (NB - 1 - i);
+      const v = k >= 0 && k < env.length ? env[k] : 0;
+      bars[i].style.height = (2 + 42 * v).toFixed(1) + 'px';
+    }
+    if (hot) $(id).classList.toggle('hot', t >= hot[0] && t <= hot[1]);
+  }
+}
+
+const tapPos = {};
+function tapAt(t) {
+  const tap = $('tap');
+  let best = null;
+  for (const e of D.taps) if (t >= e.t - 0.1 && t <= e.t + 0.7) best = e;
+  if (!best || !docs.you) { tap.style.opacity = 0; return; }
+  const el = docs.you.getElementById(best.el);
+  const r = el.getBoundingClientRect();
+  if (r.width > 0) {
+    const fr = $('you').getBoundingClientRect();
+    tapPos[best.el] = [fr.left + (r.left + r.width / 2) * D.scale, fr.top + (r.top + r.height / 2) * D.scale];
+  }
+  const pos = tapPos[best.el];
+  if (!pos) { tap.style.opacity = 0; return; }
+  tap.style.left = pos[0] + 'px';
+  tap.style.top = pos[1] + 'px';
+  const p = (t - best.t + 0.1) / 0.8;
+  tap.style.opacity = (Math.sin(Math.PI * clamp(p)) * 0.9).toFixed(3);
+  tap.style.transform = 'translate(-50%,-50%) scale(' + (0.85 + 0.15 * clamp(p)).toFixed(3) + ')';
+}
+
+function seek(t) {
+  for (const [id, a, b] of D.scenes) $(id).style.opacity = vis(t, a, b).toFixed(3);
+  // chat typing
+  const n = Math.round(D.cmd.length * clamp((t - D.type[0]) / (D.type[1] - D.type[0])));
+  const typed = D.cmd.slice(0, n);
+  const head = typed.slice(0, Math.min(n, 12)), rest = typed.slice(12);
+  const caret = t < D.replyAt && Math.floor(t * 2) % 2 === 0 ? '<span class="caret"></span>' : '';
+  $('typed').innerHTML = '<span class="cmd">' + esc(head) + '</span>' + esc(rest) + caret;
+  $('reply').style.opacity = ease((t - D.replyAt) / 0.3);
+  const sums = $('sum').children;
+  for (let i = 0; i < sums.length; i++) sums[i].style.opacity = ease((t - D.sumAt - i * 0.45) / 0.35);
+  const cards = document.querySelectorAll('.card');
+  cards.forEach((c, i) => { c.style.opacity = ease((t - D.cardsAt - i * 0.3) / 0.35); });
+  pageState(t);
+  meters(t);
+  tapAt(t);
+  $('fade').style.opacity = (1 - ease(t / 0.6)) + ease((t - (D.duration - 1.0)) / 0.9) > 0
+    ? Math.max(1 - ease(t / 0.6), ease((t - (D.duration - 1.0)) / 0.9)).toFixed(3) : '0';
+}
+window.DURATION = D.duration;
+window.FPS = FPS;
+window.ready = document.fonts.ready.then(loadFrames).then(() => { seek(0); return true; });
+window.seek = seek;
+</script>
+</body>
+</html>

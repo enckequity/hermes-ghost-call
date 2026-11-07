@@ -1,0 +1,41 @@
+Ghost Call launch video: narration timecodes
+Video: video/out/ghost-call-launch.mp4, 01:23.5 long, 1920x1080, 30 fps.
+Narrator: ElevenLabs takes in video/narration/sia/; each line starts at its
+time and runs for its length. The call is the real test run (scripts/e2e_call.py).
+
+N1  00:00.3 - 00:05.9  (5.6 s, 15 words)
+    Meet Ghost Call. An AI assistant that helps you on your calls, in real time.
+
+N2  00:06.2 - 00:10.5  (4.3 s, 11 words)
+    You make the call. Hermes listens, and hints only to you.
+
+N3  00:20.6 - 00:26.3  (5.7 s, 13 words)
+    Hermes hears every word. A hint appears, and only you can see it.
+
+N4  00:30.9 - 00:34.5  (3.6 s, 11 words)
+    It knows your target price, and never says it out loud.
+
+N5  00:40.9 - 00:48.6  (7.7 s, 19 words)
+    Sixty, no contract. Hermes has a follow-up. One tap, and it plays in your ear. They never hear it.
+
+N6  01:07.8 - 01:12.7  (4.9 s, 15 words)
+    Hang up, and get the deal, what's still open, and a message to confirm it.
+
+N7  01:13.0 - 01:17.3  (4.4 s, 12 words)
+    Two browser links, a real phone line, or any call on speaker.
+
+N8  01:17.6 - 01:22.0  (4.4 s, 9 words)
+    Ghost Call. Your real-time AI copilot for every call.
+
+Call audio and on-screen events:
+    00:11.1  caller  : Hi, my contract ended last month and I'd like a better price on my internet.
+    00:16.3  provider: I can do seventy-nine dollars a month if you sign a new two-year contract.
+    00:26.6  caller  : I don't want a new contract. FastNet offers a gig for fifty-five.
+    00:34.8  provider: Let me transfer you to retention. I can offer sixty dollars a month for twelve months, with no contract.
+    00:57.5  caller  : And after twelve months? Any other fees?
+    01:00.2  provider: It stays at sixty. There is a ten dollar router fee, but I can waive it for you.
+    01:05.3  caller  : Great, let's do it.
+    00:22.6  hint on your page: they want a 2-year contract → say you want no contract, mention FastNet $55 offer
+    00:44.0  hint on your page: they said $60 for 12 months no contract → ask if price rises after promo ends
+    00:47.0  tap Speak hint; the whisper plays 00:48.8 - 00:57.2
+    01:07.1  hang up; the summary follows

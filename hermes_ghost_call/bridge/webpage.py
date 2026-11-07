@@ -262,6 +262,7 @@ CSS = """
 @media (prefers-color-scheme: light) { :root { --bg:#f6f6f8; --card:#fff; --line:#e3e4e8;
   --text:#14161a; --mute:#646a77; --accent:#3557d6; } }
 * { box-sizing:border-box; }
+[hidden] { display:none !important; }
 body { margin:0; background:var(--bg); color:var(--text); min-height:100vh;
   font:16px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", sans-serif;
   display:flex; justify-content:center; }

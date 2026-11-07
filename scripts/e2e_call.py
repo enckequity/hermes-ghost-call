@@ -4,6 +4,9 @@
     python scripts/e2e_call.py --fresh    # re-synthesize the voices
     python scripts/e2e_call.py --room     # speakerphone mode: both voices into one mic, the
                                           # other side sounding like a phone on speaker
+    python scripts/e2e_call.py --clips DIR --timeline video/timeline.json
+                                          # use recorded takes DIR/line01.pcm.. (24 kHz
+                                          # mono s16) and save every event for the video
 
 What it does, exactly like the two browser pages would:
 1. Synthesizes every line of a scripted call with OpenAI TTS, a different voice per side.
@@ -49,7 +52,7 @@ STYLES = {"you": "A calm customer on a phone call, natural pace.",
           "them": "A friendly call-centre agent on a phone call, natural pace."}
 
 CALL = [
-    ("them", "Thank you for calling Northwind Fiber, this is Dana. How can I help you today?"),
+    ("them", "Thank you for calling Northwind Fiber, this is Mike. How can I help you today?"),
     ("you", "Hi, my contract ended last month and I'd like a better price on my internet."),
     ("them", "I can do seventy-nine dollars a month if you sign a new two-year contract."),
     ("you", "I don't want a new contract. FastNet offers a gig for fifty-five."),
@@ -57,13 +60,16 @@ CALL = [
     ("you", "That's only six months. Honestly, I'm ready to cancel today."),
     ("them", "Let me transfer you to retention. I can offer sixty dollars a month for twelve "
              "months, with no contract."),
-    ("you", "Are there any other fees?"),
-    ("them", "There is a ten dollar monthly router fee, but I can waive it for you."),
+    ("you", "And after twelve months? Any other fees?"),
+    ("them", "It stays at sixty. There is a ten dollar router fee, but I can waive it for you."),
     ("you", "Great, let's do it."),
     ("them", "Done. Your confirmation number is N F 2 2 9 1."),
 ]
-SPEAK_AFTER_LINE = 6  # tap Speak hint in the pause after this line (the $60 offer)
+SPEAK_AFTER_LINE = 7  # tap Speak hint in the pause after this line (1-based: the $60 offer)
 ROOM = False  # --room: speakerphone mode, both voices reach one microphone
+TIMELINE = ""  # --timeline PATH: save every event with its time, for the launch video
+CLIP_PATHS: list[str] = []  # cached 24 kHz PCM of each CALL line, in order
+CLIPS_DIR = ""  # --clips DIR: use DIR/lineNN.pcm (24 kHz mono s16) instead of TTS
 
 
 def log(msg: str) -> None:
@@ -94,12 +100,15 @@ async def synthesize(client, fresh: bool) -> list[bytes]:
 
     WORK.mkdir(parents=True, exist_ok=True)
     out = []
-    for role, text in CALL:
+    for n, (role, text) in enumerate(CALL, start=1):
         tag = hashlib.sha1(f"{role}|{VOICES[role]}|{text}".encode()).hexdigest()[:12]
         path = WORK / f"line-{tag}.pcm"
-        if fresh or not path.exists():
+        if CLIPS_DIR:  # pre-recorded voices (the launch video uses ElevenLabs takes)
+            path = Path(CLIPS_DIR).resolve() / f"line{n:02d}.pcm"
+        elif fresh or not path.exists():
             pcm = await client.tts(text, voice=VOICES[role], style=STYLES[role], timeout=30)
             path.write_bytes(pcm)
+        CLIP_PATHS.append(str(path))
         pcm = path.read_bytes()
         if ROOM and role == "them":
             pcm = phone_speaker(pcm)
@@ -337,6 +346,25 @@ async def run(fresh: bool) -> int:
         (WORK / "you-heard.wav").write_bytes(you_wav)
 
     server.should_exit = True
+    if TIMELINE:
+        t0 = report["lines"][0]["began"]
+        rel = lambda t: round(t - t0, 3)  # noqa: E731
+        Path(TIMELINE).write_text(json.dumps({
+            "mode": "room" if ROOM else "web",
+            "goal": scenario["goal"],
+            "lines": [{"role": ln["role"], "text": ln["text"], "began": rel(ln["began"]),
+                       "ended": rel(ln["ended"]), "clip": CLIP_PATHS[i]}
+                      for i, ln in enumerate(report["lines"])],
+            "captions": [{"t": rel(t), "role": m.get("role"), "text": m.get("text", "")}
+                         for t, m in captions],
+            "hints": [{"t": rel(t), "text": m.get("text", ""), "line": m.get("line", "")}
+                      for t, m in hints],
+            "whisper": ({"t": rel(whispers[0][0]), "tap": rel(whisper_requested_at),
+                         "text": whispers[0][1].get("text", ""),
+                         "wav": str(WORK / "whisper.wav")} if whispers else None),
+            "summary": summary or "",
+        }, indent=2), encoding="utf-8")
+        log(f"timeline saved: {TIMELINE}")
 
     # ---- report ------------------------------------------------------------------------------
     print("\n================ TRANSCRIPTION (bridge realtime STT vs the script) ================")
@@ -414,8 +442,12 @@ def main() -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
     dev_demo.load_demo_env(ROOT / "demo.env")
-    global ROOM
+    global ROOM, TIMELINE, CLIPS_DIR
     ROOM = "--room" in sys.argv
+    if "--timeline" in sys.argv:
+        TIMELINE = sys.argv[sys.argv.index("--timeline") + 1]
+    if "--clips" in sys.argv:
+        CLIPS_DIR = sys.argv[sys.argv.index("--clips") + 1]
     return asyncio.run(run(fresh="--fresh" in sys.argv))
 
 

@@ -1,0 +1,7 @@
+build/
+out/
+narration/
+assets/*.pcm
+assets/*.wav
+raw/
+voices/

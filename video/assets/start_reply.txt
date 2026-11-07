@@ -1,0 +1,4 @@
+👻 Ghost g3b8790 is ready (web mode, hints: auto). Hermes never joins the call.
+You (open with headphones): http://localhost:8766/g/g3b8790/you?t=W41KXHhkIYPL994jrAYVpOMB0pMiJn8z
+Them (send to the other party): http://localhost:8766/g/g3b8790/them?t=LiHC1pdvZHDykpI4DWYH8ijhNsi04C7p
+Open 'you' yourself with headphones; send 'them' to the other party. Each link works once, for 10 minutes.

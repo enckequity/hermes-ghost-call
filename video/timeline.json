@@ -1,0 +1,174 @@
+{
+ "mode": "web",
+ "goal": "get a lower price on my home internet. I pay $89/month for 500 Mbps, customer 4 years, contract ended in October. FastNet offers 1 Gbps at $55/month for 12 months. Target $60/month or less, no new contract. Walk away: cancel and switch. Name Winch, account 4471 with Northwind Fiber retention",
+ "lines": [
+  {
+   "role": "them",
+   "text": "Thank you for calling Northwind Fiber, this is Mike. How can I help you today?",
+   "began": 0.0,
+   "ended": 3.75,
+   "clip": "video/voices/line01.pcm"
+  },
+  {
+   "role": "you",
+   "text": "Hi, my contract ended last month and I'd like a better price on my internet.",
+   "began": 7.235,
+   "ended": 12.078,
+   "clip": "video/voices/line02.pcm"
+  },
+  {
+   "role": "them",
+   "text": "I can do seventy-nine dollars a month if you sign a new two-year contract.",
+   "began": 13.282,
+   "ended": 17.328,
+   "clip": "video/voices/line03.pcm"
+  },
+  {
+   "role": "you",
+   "text": "I don't want a new contract. FastNet offers a gig for fifty-five.",
+   "began": 20.813,
+   "ended": 24.86,
+   "clip": "video/voices/line04.pcm"
+  },
+  {
+   "role": "them",
+   "text": "OK. I can offer seventy dollars a month for six months.",
+   "began": 26.063,
+   "ended": 30.094,
+   "clip": "video/voices/line05.pcm"
+  },
+  {
+   "role": "you",
+   "text": "That's only six months. Honestly, I'm ready to cancel today.",
+   "began": 33.594,
+   "ended": 37.719,
+   "clip": "video/voices/line06.pcm"
+  },
+  {
+   "role": "them",
+   "text": "Let me transfer you to retention. I can offer sixty dollars a month for twelve months, with no contract.",
+   "began": 38.922,
+   "ended": 44.782,
+   "clip": "video/voices/line07.pcm"
+  },
+  {
+   "role": "you",
+   "text": "And after twelve months? Any other fees?",
+   "began": 51.063,
+   "ended": 53.547,
+   "clip": "video/voices/line08.pcm"
+  },
+  {
+   "role": "them",
+   "text": "It stays at sixty. There is a ten dollar router fee, but I can waive it for you.",
+   "began": 54.735,
+   "ended": 59.578,
+   "clip": "video/voices/line09.pcm"
+  },
+  {
+   "role": "you",
+   "text": "Great, let's do it.",
+   "began": 63.063,
+   "ended": 64.672,
+   "clip": "video/voices/line10.pcm"
+  },
+  {
+   "role": "them",
+   "text": "Done. Your confirmation number is N F 2 2 9 1.",
+   "began": 65.86,
+   "ended": 70.141,
+   "clip": "video/voices/line11.pcm"
+  }
+ ],
+ "captions": [
+  {
+   "t": 4.907,
+   "role": "them",
+   "text": "Thank you for calling Northwind Fiber. This is Mike. How can I help you today?"
+  },
+  {
+   "t": 13.11,
+   "role": "you",
+   "text": "Hi, my contract ended last month and I'd like a better price on my internet."
+  },
+  {
+   "t": 18.438,
+   "role": "them",
+   "text": "I can do $79 a month if you sign a new two-year contract."
+  },
+  {
+   "t": 25.922,
+   "role": "you",
+   "text": "I don't want a new contract. FastNet offers a gig for $55."
+  },
+  {
+   "t": 31.11,
+   "role": "them",
+   "text": "Okay, I can offer $70 a month for six months."
+  },
+  {
+   "t": 36.032,
+   "role": "you",
+   "text": "That's only six months."
+  },
+  {
+   "t": 38.688,
+   "role": "you",
+   "text": "Honestly, I'm ready to cancel today."
+  },
+  {
+   "t": 45.844,
+   "role": "them",
+   "text": "Let me transfer you to retention. I can offer $60 a month for 12 months with no contract."
+  },
+  {
+   "t": 53.063,
+   "role": "you",
+   "text": "And after 12 months?"
+  },
+  {
+   "t": 54.375,
+   "role": "you",
+   "text": "Any other fees?"
+  },
+  {
+   "t": 61.078,
+   "role": "them",
+   "text": "It stays at 60. There is a $10 router fee, but I can waive it for you."
+  },
+  {
+   "t": 65.453,
+   "role": "you",
+   "text": "Great! Let's do it!"
+  },
+  {
+   "t": 71.422,
+   "role": "them",
+   "text": "Done! Your confirmation number is NF2291."
+  }
+ ],
+ "hints": [
+  {
+   "t": 19.625,
+   "text": "they want a 2-year contract → say you want no contract, mention FastNet $55 offer",
+   "line": "00:21 · they want a 2-year contract → say you want no contract, mention FastNet $55 offer"
+  },
+  {
+   "t": 48.157,
+   "text": "they said $60 for 12 months no contract → ask if price rises after promo ends",
+   "line": "00:50 · they said $60 for 12 months no contract → ask if price rises after promo ends"
+  },
+  {
+   "t": 61.828,
+   "text": "they waived the fee → accept, ask for a confirmation number",
+   "line": "01:03 · they waived the fee → accept, ask for a confirmation number"
+  }
+ ],
+ "whisper": {
+  "t": 50.032,
+  "tap": 48.297,
+  "text": "they said $60 for 12 months no contract → ask if price rises after promo ends",
+  "wav": "video/assets/whisper.wav"
+ },
+ "summary": "👻 Ghost call ended · Northwind Fiber retention · 01:18 · 3 hints\nAgreed: Internet service at $60/month for 12 months with no contract and waived $10 router fee\nAmount: $60/month for 12 months, no contract\nDraft SMS: \"Hi, confirming my internet plan at $60/month for 12 months with no contract and waived router fee. Thanks, Winch.\""
+}

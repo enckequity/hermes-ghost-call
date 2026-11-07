@@ -1,0 +1,31 @@
+1
+00:00:00,300 --> 00:00:05,913
+Meet Ghost Call. An AI assistant that helps you on your calls, in real time.
+
+2
+00:00:06,213 --> 00:00:10,539
+You make the call. Hermes listens, and hints only to you.
+
+3
+00:00:20,598 --> 00:00:26,289
+Hermes hears every word. A hint appears, and only you can see it.
+
+4
+00:00:30,893 --> 00:00:34,459
+It knows your target price, and never says it out loud.
+
+5
+00:00:40,880 --> 00:00:48,609
+Sixty, no contract. Hermes has a follow-up. One tap, and it plays in your ear. They never hear it.
+
+6
+00:01:07,820 --> 00:01:12,674
+Hang up, and get the deal, what's still open, and a message to confirm it.
+
+7
+00:01:12,973 --> 00:01:17,337
+Two browser links, a real phone line, or any call on speaker.
+
+8
+00:01:17,637 --> 00:01:22,025
+Ghost Call. Your real-time AI copilot for every call.
