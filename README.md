@@ -3,7 +3,13 @@
 **Ghost Call Copilot for [Hermes Agent](https://github.com/NousResearch/hermes-agent).**
 You make (or take) a normal call. Hermes listens and whispers one-line hints to you only.
 
-> *Hermes never joined the call. Earpiece only.*
+> *Your real-time AI assistant on every call. Earpiece only.*
+
+[![Ghost Call launch video: a real call, hints on your page, a whispered hint, the summary](docs/media/ghost-call-launch.jpg)](docs/media/ghost-call-launch.mp4)
+
+▶ **[Watch the launch video](docs/media/ghost-call-launch.mp4)** (1:24, sound on). Every hint,
+caption and summary in it comes from a real test run of the plugin; how it is made is in
+[`video/`](video/SCRIPT.md).
 
 ```
 01:05 · they said Saturday only → offer Friday 19:30 or Sunday
