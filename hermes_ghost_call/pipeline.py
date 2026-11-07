@@ -121,6 +121,8 @@ class HintEngine:
         line = hintsmod.clean_hint(raw, self.hint_lines)
         if line is None:
             return self._note("silent:model")
+        if hintsmod.leaks_private(line, self.goal, self.turns):
+            return self._note("silent:private")
         hint = self.store.add_hint(self.sid, self.t_now(), line)
         self.limiter.mark(self.mono())
         self.hint_lines.append(line)

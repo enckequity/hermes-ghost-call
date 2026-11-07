@@ -152,7 +152,21 @@ screen or in shell history.
 
 It starts the bridge on `http://localhost:8766`, prints the You/Them links and prints every chat
 message the plugin would post (the ticker and the summary). Type `speak`, `allow`, `say <text>`,
-`hangup` at the prompt.
+`hangup` at the prompt, or rehearse without a mic: `them <line>` / `you <line>`.
+
+### Voice test with two bot callers (no humans, no mic)
+
+```bash
+python scripts/e2e_call.py
+```
+
+It voices both sides of the ISP call with OpenAI TTS (two voices), joins the You and Them links
+like the pages do, streams real-time 20 ms audio frames through the bridge and its realtime STT,
+taps **Speak hint**, transcribes the earpiece whisper and everything the Them side heard, hangs
+up and checks: speech transcribed, hints arrived, the whisper says the hint, the Them socket got
+nothing but audio, no hint text in what Them heard, exactly one summary. A run takes ~2 minutes
+and a few cents. Last run (2026-11-07): all six checks passed, hints 1.4-1.8 s after the other
+party's line, whisper 1.4-2.0 s after the tap.
 
 ## Tools, commands, hooks
 

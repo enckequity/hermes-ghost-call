@@ -18,6 +18,7 @@ MAX_HINT_CHARS = 100
 CONTEXT_TURNS = 20
 REPEAT_RATIO = 0.86
 HINT_REPEAT_RATIO = 0.8
+ACTION_REPEAT_RATIO = 0.7  # same advice behind a new "they said ... →" prefix
 
 FILLER_PHRASES = frozenset({
     "uh huh", "uhhuh", "mm hmm", "mhm", "mmhmm", "hmm", "hm", "uh", "um", "er", "ah", "oh",
@@ -144,9 +145,44 @@ def clean_hint(raw: str | None, previous: Iterable[str] = ()) -> str | None:
         cut = line[:MAX_HINT_CHARS - 1].rsplit(" ", 1)[0].rstrip(",;:-— ")
         line = cut + "…"
     for prev in previous:
-        if similar(prev, line) >= HINT_REPEAT_RATIO:
+        if similar(prev, line) >= HINT_REPEAT_RATIO or \
+                similar(_action(prev), _action(line)) >= ACTION_REPEAT_RATIO:
             return None
     return line
+
+
+_PRIVATE_AMOUNTS = (
+    re.compile(r"\b(?:target|walk[- ]?away|at most|no more than|max(?:imum)?|budget)\b"
+               r"[^$\d.;]{0,20}\$\s?(\d+(?:\.\d+)?)", re.IGNORECASE),
+    re.compile(r"\$\s?(\d+(?:\.\d+)?)[^.;$]{0,15}\bor less\b", re.IGNORECASE),
+)
+_DOLLARS = re.compile(r"\$\s?(\d+(?:\.\d+)?)")
+_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+
+
+def _action(line: str) -> str:
+    """The part the user acts on: after the arrow, or the whole line."""
+    return line.split("→", 1)[1] if "→" in line else line
+
+
+def private_amounts(goal: str) -> set[str]:
+    """Dollar amounts the goal marks as the user's own limit (target, budget, walk-away)."""
+    return {m.group(1) for rx in _PRIVATE_AMOUNTS for m in rx.finditer(goal or "")}
+
+
+def leaks_private(line: str, goal: str, turns: Sequence[dict]) -> bool:
+    """True when the hint tells the user to say their own limit before the other side said it.
+
+    "they said $70 → counter with $60" is dropped when $60 is the user's target; "they offered
+    $60 → ask about fees" is fine, because the other party said $60 first.
+    """
+    private = private_amounts(goal)
+    if not private:
+        return False
+    named = set(_DOLLARS.findall(_action(line)))
+    said = {n for t in turns if t.get("speaker") == "them"
+            for n in _NUMBER.findall(str(t.get("text") or ""))}
+    return bool((named & private) - said)
 
 
 def stamp(t_seconds: float) -> str:
@@ -199,13 +235,14 @@ SYSTEM_PROMPT = (
     "  they said Saturday only → offer Friday 19:30 or Sunday\n"
     "  $95 is over budget → ask for the set menu or a smaller table\n"
     "  they asked for a name → say Winch\n"
-    "  $70 is still over your target → mention the competitor's lower offer\n"
+    "  they said $70 → counter with the competitor's price\n"
     "  they want a 2-year contract → decline, you want no contract\n"
     "  they waived the fee → accept, ask for a confirmation number\n"
     "When the goal is to bargain (a discount, a lower bill, a refund): never accept the first "
     "offer; use one lever per hint (the competitor offer, loyalty, or readiness to cancel). The "
     "user's target and walk-away price are private: never suggest saying them or any number "
-    "the user would settle for. When an offer meets the target, check what is still unknown "
+    "the user would settle for; a counter-offer goes below the target (e.g. the competitor's "
+    "price), never at it. When an offer meets the target, check what is still unknown "
     "(promo length, price after it, fees, contract) one item per hint, then accept. Once "
     "agreed, ask for a confirmation number; after that, write SILENT.\n"
     "Rules: one action or one fact, never two joined by 'and'. React to the latest thing they "

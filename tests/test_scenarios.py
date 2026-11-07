@@ -82,3 +82,41 @@ def test_port_free_sees_a_listener():
         port = busy.getsockname()[1]
         assert _demo().port_free("127.0.0.1", port) is False
     assert _demo().port_free("127.0.0.1", port) is True
+
+
+ISP_GOAL = ("get a lower price on my home internet. I pay $89/month. FastNet offers $55/month. "
+            "Target $60/month or less, no new contract. Walk away: cancel and switch.")
+
+
+def test_private_amounts_come_from_the_goal():
+    assert hints.private_amounts(ISP_GOAL) == {"60"}
+    assert hints.private_amounts("book a table Friday 8pm for 4, budget $80") == {"80"}
+    assert hints.private_amounts("ask the landlord to fix the heating") == set()
+
+
+def test_hint_that_names_the_target_first_is_dropped():
+    turns = [{"speaker": "them", "text": "I can offer $70 a month for six months."}]
+    assert hints.leaks_private("they said $70 for six months → counter with $60 for 12 months",
+                               ISP_GOAL, turns)
+    assert not hints.leaks_private("they said $70 → counter with FastNet's $55",
+                                   ISP_GOAL, turns)
+
+
+def test_target_is_fine_once_they_said_it():
+    turns = [{"speaker": "them", "text": "I can offer $60 a month for 12 months."}]
+    assert not hints.leaks_private("they offered $60 → confirm $60 has no extra fees",
+                                   ISP_GOAL, turns)
+
+
+def test_repeat_with_a_new_prefix_is_dropped():
+    prev = ["they waived the fee → confirm total monthly price is $60 with no hidden fees"]
+    assert hints.clean_hint("Confirm the total monthly price is $60 with no hidden fees or "
+                            "charges.", prev) is None
+
+
+def test_same_advice_reworded_after_a_new_line_is_dropped():
+    prev = ["they waived the router fee → confirm total monthly price is $60 with no hidden fees"]
+    assert hints.clean_hint("Thank them, then confirm the total monthly price is $60 with no "
+                            "fees.", prev) is None
+    assert hints.clean_hint("they gave NF-2291 → ask if the price rises after 12 months",
+                            prev) is not None
