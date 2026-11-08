@@ -538,8 +538,11 @@ def create_app(settings: BridgeSettings, *, store: Store | None = None,
 
 # ---- shared bridge: workspace API (docs/BRIDGE_API.md) and phone mode -----------------------
 def _err(status: int, code: str, message: str) -> JSONResponse:
+    headers = {"Cache-Control": "no-store"}
+    if status == 429:
+        headers["Retry-After"] = "5"
     return JSONResponse({"error": {"code": code, "message": message}}, status_code=status,
-                        headers={"Cache-Control": "no-store"})
+                        headers=headers)
 
 
 def _snapshot(store: Store, session: dict) -> dict:
