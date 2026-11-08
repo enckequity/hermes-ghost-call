@@ -1,5 +1,5 @@
-"""Client for the shared bridge (docs/BRIDGE_API.md), used when GHOST_CALL_BRIDGE_URL and
-GHOST_CALL_BRIDGE_TOKEN are set.
+"""Client for the shared bridge (docs/BRIDGE_API.md), used when GHOST_CALL_BRIDGE_URL is set with
+either GHOST_CALL_BRIDGE_TOKEN or TEAMSHIFT_USAGE_TOKEN plus TEAMSHIFT_WORKSPACE_NAME.
 
 The workspace makes outbound HTTPS requests only. The local store stays the source for the
 ticker, the summary and the tools: ``create`` starts the session on the bridge, and ``sync``
@@ -25,7 +25,9 @@ from .session import ENDED, LIVE, Store
 log = logging.getLogger(__name__)
 
 URL_ENV = "GHOST_CALL_BRIDGE_URL"
-TOKEN_ENV = "GHOST_CALL_BRIDGE_TOKEN"
+TOKEN_ENV = "GHOST_CALL_BRIDGE_TOKEN"  # owner: a signed <workspace>.<sig> token
+USAGE_TOKEN_ENV = "TEAMSHIFT_USAGE_TOKEN"  # customer boxes: the existing usage token...
+WORKSPACE_ENV = "TEAMSHIFT_WORKSPACE_NAME"  # ...sent with the workspace name in a header
 HINT_KEY_ENV = "OPENROUTER_API_KEY"  # the workspace's own key for hints and the summary
 API = "/v1"
 TIMEOUT_S = 10.0
@@ -49,9 +51,23 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_NoRedirect)
 
 
+def _env(environ: Mapping[str, str], name: str) -> str:
+    return str(environ.get(name) or "").strip()
+
+
+def credentials(environ: Mapping[str, str]) -> dict[str, str]:
+    """Auth headers for the bridge: GHOST_CALL_BRIDGE_TOKEN when set, else the workspace usage
+    token plus its name, else none."""
+    if token := _env(environ, TOKEN_ENV):
+        return {"Authorization": f"Bearer {token}"}
+    usage, name = _env(environ, USAGE_TOKEN_ENV), _env(environ, WORKSPACE_ENV)
+    if usage and name:
+        return {"Authorization": f"Bearer {usage}", "X-TeamShift-Workspace": name}
+    return {}
+
+
 def configured(environ: Mapping[str, str]) -> bool:
-    return bool(str(environ.get(URL_ENV) or "").strip()
-                and str(environ.get(TOKEN_ENV) or "").strip())
+    return bool(_env(environ, URL_ENV) and credentials(environ))
 
 
 class RemoteBridge:
@@ -71,13 +87,13 @@ class RemoteBridge:
         if parts.scheme != "https" and not (parts.scheme == "http"
                                             and parts.hostname in _LOCAL_HOSTS):
             raise BridgeError(f"{URL_ENV} must be an https URL")
-        token = str(self.environ.get(TOKEN_ENV) or "").strip()
-        if not token:
-            raise BridgeError(f"{TOKEN_ENV} is not set")
+        creds = credentials(self.environ)
+        if not creds:
+            raise BridgeError(f"set {TOKEN_ENV}, or {USAGE_TOKEN_ENV} and {WORKSPACE_ENV}")
         req = urllib.request.Request(
             base + API + path, method=method,
             data=None if body is None else json.dumps(body).encode(),
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/json",
+            headers={**creds, "Accept": "application/json",
                      "Content-Type": "application/json", "User-Agent": "ghost-call"})
         try:
             with self._open(req, timeout=self.timeout_s) as resp:

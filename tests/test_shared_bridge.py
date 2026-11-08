@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
 import io
 import json
 import re
@@ -23,15 +22,17 @@ from starlette.websockets import WebSocketDisconnect
 
 from hermes_ghost_call import commands, hooks, remote, safety, tools
 from hermes_ghost_call import summary as summarymod
+from hermes_ghost_call.bridge import auth as authmod
 from hermes_ghost_call.bridge import live, telnyx_io, webpage
-from hermes_ghost_call.bridge.app import create_app
+from hermes_ghost_call.bridge.app import create_app, factory
 from hermes_ghost_call.bridge.live import GhostRuntime
-from hermes_ghost_call.bridge.settings import BridgeSettings, parse_tenants
+from hermes_ghost_call.bridge.settings import BridgeSettings, parse_overrides
 from hermes_ghost_call.session import ENDED, LIVE, Store
 from hermes_ghost_call.watcher import ticker_text
 
-TOKEN_A = "workspace-a-token-0123456789"
-TOKEN_B = "workspace-b-token-9876543210"
+SIGNING_KEY = "test-signing-key-not-a-secret"
+TOKEN_A = authmod.mint(SIGNING_KEY, "ws-a")
+TOKEN_B = authmod.mint(SIGNING_KEY, "ws-b")
 HINT_KEY = "sk-or-MARKER-workspace-hint-key"
 BASE = "https://ghost.example.test"
 VENDORS = re.compile(r"openai|twilio|telnyx|openrouter|hermes|gpt|anthropic|claude|linq|nous",
@@ -39,10 +40,6 @@ VENDORS = re.compile(r"openai|twilio|telnyx|openrouter|hermes|gpt|anthropic|clau
 SIGNER = Ed25519PrivateKey.generate()
 PUBLIC_KEY = base64.b64encode(SIGNER.public_key().public_bytes(
     Encoding.Raw, PublicFormat.Raw)).decode()
-
-
-def sha(token: str) -> str:
-    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def auth(token: str = TOKEN_A) -> dict:
@@ -84,11 +81,12 @@ class FakeTelnyx:
 
 @pytest.fixture
 def settings():
-    tenants = parse_tenants(json.dumps({
-        sha(TOKEN_A): {"workspace": "ws-a", "hint_base_url": "https://hints.example.test/v1",
-                       "hint_model": "model-a", "daily_session_limit": 3},
-        sha(TOKEN_B): {"workspace": "ws-b"}}))
-    return BridgeSettings(public_base_url=BASE, tick_s=0.02, tenants=tenants,
+    overrides = parse_overrides(json.dumps({
+        "ws-a": {"hint_base_url": "https://hints.example.test/v1", "hint_model": "model-a",
+                 "daily_session_limit": 3},
+        "ws-off": {"disabled": True}}))
+    return BridgeSettings(public_base_url=BASE, tick_s=0.02, signing_key=SIGNING_KEY,
+                          overrides=overrides,
                           telnyx_public_key=PUBLIC_KEY, caller_number="+12125550100",
                           environ={"HERMES_GHOST_ALLOW_ALL": "1"})
 
@@ -116,14 +114,202 @@ def path_of(url: str) -> str:
 
 
 # ---- tenants and auth -------------------------------------------------------------------------
-def test_tenant_config_is_validated():
-    assert parse_tenants("") == {}
-    for bad in ('[]', '{"nothex": {"workspace": "a"}}',
-                json.dumps({sha("x"): {"workspace": "bad id!"}}),
-                json.dumps({sha("x"): {"workspace": "a", "hint_base_url": "http://x"}}),
-                json.dumps({sha("x"): {"workspace": "a"}, sha("y"): {"workspace": "a"}})):
+def test_overrides_are_validated():
+    assert parse_overrides("") == {}
+    for bad in ('[]', '{"Bad Name": {}}', '{"a": []}', '{"a": {"hint_base_url": "http://x"}}'):
         with pytest.raises(ValueError):
-            parse_tenants(bad)
+            parse_overrides(bad)
+
+
+def test_signed_tokens(app):
+    ws, sig = TOKEN_A.split(".")
+    wrong_key = authmod.mint("some-other-key", "ws-a")
+    swapped = f"ws-b.{sig}"  # ws-a's signature under ws-b's name
+    with TestClient(app) as c:
+        assert c.get("/v1/health", headers=auth()).status_code == 200
+        for bad in (wrong_key, swapped, ws, f"{ws}.", f"WS-A.{sig}", f"{TOKEN_A}x",
+                    f"-ws.{sig}", "", "a" * 600):
+            assert c.get("/v1/health", headers=auth(bad)).status_code == 401, bad
+        off = c.get("/v1/health", headers=auth(authmod.mint(SIGNING_KEY, "ws-off")))
+        assert off.status_code == 403 and off.json()["error"]["code"] == "disabled"
+        assert create(c, token=authmod.mint(SIGNING_KEY, "ws-off")).status_code == 403
+    with pytest.raises(ValueError):
+        authmod.mint(SIGNING_KEY, "Not_Valid")
+    with pytest.raises(ValueError):
+        authmod.mint("", "ws-a")
+
+
+def test_no_signing_key_refuses_every_signed_token(settings, store, phone):
+    settings.signing_key = ""
+    app = create_app(settings, store=store, client=None, stt_connect=None, twilio=None,
+                     telnyx=phone, janitor=False)
+    with TestClient(app) as c:
+        assert c.get("/v1/health", headers=auth()).status_code == 401
+
+
+def test_bridge_token_cli_mints_from_the_credentials_dir(tmp_path, capsys):
+    from hermes_ghost_call import cli
+
+    (tmp_path / "GHOST_CALL_BRIDGE_SIGNING_KEY").write_text(SIGNING_KEY + "\n")
+    env = {"CREDENTIALS_DIRECTORY": str(tmp_path), "GHOST_CALL_BRIDGE_SIGNING_KEY": "ignored"}
+    assert cli.bridge_token("ws-a", env) == 0
+    assert capsys.readouterr().out.strip() == TOKEN_A
+    assert cli.bridge_token("ws-a", {"GHOST_CALL_BRIDGE_SIGNING_KEY": SIGNING_KEY}) == 0
+    assert capsys.readouterr().out.strip() == TOKEN_A
+    assert cli.bridge_token("Bad!", env) == 2
+    assert cli.bridge_token("ws-a", {}) == 2
+
+
+# ---- usage-token auth against a fake TeamShift auth service -------------------------------------
+USAGE_NAME = "t-0123456789"
+USAGE_TOKEN = "ts_usg_" + "ab" * 32
+
+
+class FakeAuth:
+    """A real HTTP server on loopback that answers like /api/workspace/usage."""
+
+    def __init__(self) -> None:
+        import http.server
+        import threading
+
+        self.status, self.delay, self.hits = 200, 0.0, []
+        fake = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                fake.hits.append((self.path, self.headers.get("authorization"),
+                                  self.headers.get("x-teamshift-workspace")))
+                time.sleep(fake.delay)
+                ok = (self.headers.get("authorization") == f"Bearer {USAGE_TOKEN}"
+                      and self.headers.get("x-teamshift-workspace") == USAGE_NAME)
+                code = fake.status if ok or fake.status != 200 else 401
+                self.send_response(code)
+                self.send_header("content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+@pytest.fixture
+def fake_auth():
+    server = FakeAuth()
+    yield server
+    server.close()
+
+
+def usage_hdr(token=USAGE_TOKEN, name=USAGE_NAME) -> dict:
+    return {"Authorization": f"Bearer {token}", "X-TeamShift-Workspace": name}
+
+
+def usage_app(settings, store, phone, fake_auth, clock=None):
+    settings.auth_url = fake_auth.url
+    settings.auth_timeout_s = 0.5
+    return create_app(settings, store=store, client=None, stt_connect=None, twilio=None,
+                      telnyx=phone, janitor=False, clock=clock)
+
+
+def test_usage_token_valid_and_cached(settings, store, phone, fake_auth, clock):
+    app = usage_app(settings, store, phone, fake_auth, clock)
+    with TestClient(app) as c:
+        assert c.get("/v1/health", headers=usage_hdr()).status_code == 200
+        assert fake_auth.hits == [("/api/workspace/usage", f"Bearer {USAGE_TOKEN}", USAGE_NAME)]
+        assert c.put("/v1/sessions/u1", json={"goal": "g"}, headers=usage_hdr()).status_code == 201
+        assert store.tenant_session(USAGE_NAME, "u1") is not None
+        assert len(fake_auth.hits) == 1  # cache hit
+        fake_auth.status = 500  # the cache still answers within 10 minutes...
+        assert c.get("/v1/health", headers=usage_hdr()).status_code == 200
+        clock.advance(601)  # ...and after that the auth service is asked again
+        assert c.get("/v1/health", headers=usage_hdr()).status_code == 401
+        assert len(fake_auth.hits) == 2
+
+
+def test_usage_token_refusals_fail_closed_and_are_not_cached(settings, store, phone, fake_auth):
+    app = usage_app(settings, store, phone, fake_auth)
+    with TestClient(app) as c:
+        fake_auth.status = 401
+        assert c.get("/v1/health", headers=usage_hdr()).status_code == 401
+        assert c.get("/v1/health", headers=usage_hdr()).status_code == 401
+        assert len(fake_auth.hits) == 2  # a refusal is never cached
+        fake_auth.status = 503
+        assert c.get("/v1/health", headers=usage_hdr()).status_code == 401
+        fake_auth.status, fake_auth.delay = 200, 1.0  # slower than the 0.5 s timeout
+        assert c.get("/v1/health", headers=usage_hdr()).status_code == 401
+        fake_auth.delay = 0.0
+        assert c.get("/v1/health", headers=usage_hdr()).status_code == 200
+        n = len(fake_auth.hits)
+        for hdr in (usage_hdr(name="t-012345678"), usage_hdr(name="ws-a"),
+                    usage_hdr(name=""), usage_hdr(token=USAGE_TOKEN + "0"),
+                    usage_hdr(token="ts_usg_" + "AB" * 32),
+                    {"Authorization": f"Bearer {USAGE_TOKEN}"}):
+            assert c.get("/v1/health", headers=hdr).status_code == 401
+        assert len(fake_auth.hits) == n  # bad shapes never reach the auth service
+        assert c.get("/v1/health", headers=usage_hdr(token="ts_usg_" + "cd" * 32)
+                     ).status_code == 401  # well formed, wrong token
+
+
+def test_usage_path_is_off_without_an_auth_url(app):
+    with TestClient(app) as c:
+        assert c.get("/v1/health", headers=usage_hdr()).status_code == 401
+
+
+def test_plugin_sends_usage_token_when_no_bridge_token():
+    env = {remote.URL_ENV: BASE, remote.USAGE_TOKEN_ENV: USAGE_TOKEN,
+           remote.WORKSPACE_ENV: USAGE_NAME}
+    assert remote.credentials(env) == usage_hdr()
+    assert remote.configured(env)
+    assert remote.credentials({**env, remote.TOKEN_ENV: TOKEN_A}) == auth()
+    assert not remote.configured({remote.URL_ENV: BASE, remote.USAGE_TOKEN_ENV: USAGE_TOKEN})
+
+
+# ---- deploy shape: factory, prefix, credentials directory ------------------------------------
+def test_factory_reads_secrets_only_from_the_credentials_dir(tmp_path, monkeypatch):
+    creds = tmp_path / "creds"
+    creds.mkdir()
+    for name, value in (("OPENAI_API_KEY", "file-openai"), ("GHOST_CALL_TELNYX_API_KEY", "file-tx"),
+                        ("GHOST_CALL_TELNYX_PUBLIC_KEY", PUBLIC_KEY),
+                        ("GHOST_CALL_BRIDGE_SIGNING_KEY", SIGNING_KEY)):
+        (creds / name).write_text(value + "\n")
+    env = {"CREDENTIALS_DIRECTORY": str(creds), "OPENAI_API_KEY": "env-openai",
+           "GHOST_CALL_BRIDGE_PUBLIC_URL": "https://voice.example.test/bridge/ghost/",
+           "PUBLIC_BASE_URL": "https://old.example.test", "HERMES_GHOST_DB": str(tmp_path / "g.db")}
+    s = BridgeSettings.from_env(env)
+    assert (s.openai_api_key, s.telnyx_api_key, s.telnyx_public_key, s.signing_key) == (
+        "file-openai", "file-tx", PUBLIC_KEY, SIGNING_KEY)
+    assert s.public_base_url == "https://voice.example.test/bridge/ghost"
+    assert s.base_path() == "/bridge/ghost"
+    assert BridgeSettings.from_env({"PUBLIC_BASE_URL": BASE}).public_base_url == BASE  # alias
+    assert BridgeSettings.from_env({"CREDENTIALS_DIRECTORY": str(tmp_path / "none"),
+                                    "OPENAI_API_KEY": "env"}).openai_api_key == ""
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    with TestClient(factory()) as c:
+        assert c.get("/bridge/ghost/v1/health", headers=auth()).status_code == 200
+
+
+def test_routes_and_pages_work_under_the_proxy_prefix(settings, store, phone):
+    settings.public_base_url = "https://voice.example.test/bridge/ghost"
+    app = create_app(settings, store=store, client=None, stt_connect=None, twilio=None,
+                     telnyx=phone, janitor=False)
+    with TestClient(app) as c:
+        link = create(c).json()["links"]["you"]
+        assert link.startswith("https://voice.example.test/bridge/ghost/g/")
+        page = c.get(path_of(link))  # proxy passes the prefix through
+        assert page.status_code == 200
+        assert "connect-src 'self' wss://voice.example.test;" in page.headers[
+            "content-security-policy"]
+        assert c.get(path_of(link).removeprefix("/bridge/ghost")).status_code == 200  # stripped
+        assert c.get("/bridge/ghost/v1/health", headers=auth()).status_code == 200
+        assert c.get("/bridge/ghostly/v1/health", headers=auth()).status_code == 404
 
 
 def test_every_route_needs_a_known_workspace_token(app):

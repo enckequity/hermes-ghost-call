@@ -10,7 +10,6 @@ import asyncio
 import base64
 import binascii
 import contextlib
-import hashlib
 import json
 import logging
 import re
@@ -19,6 +18,7 @@ from collections import deque
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
@@ -29,6 +29,7 @@ from .. import summary as summarymod
 from ..llm import OpenAIClient
 from ..session import ACTIVE_STATES, CREATED, ENDED, LIVE, ROLES, Store, elapsed
 from . import telnyx_io, twilio_io, webpage
+from .auth import Authenticator
 from .live import GhostRuntime
 from .settings import DEFAULT_HINT_BASE_URL, BridgeSettings, Tenant
 from .stt import SttConnect, make_openai_connect
@@ -52,7 +53,8 @@ def _headers(settings: BridgeSettings, nonce: str = "") -> dict[str, str]:
     connect = "'self'"
     ws_base = settings.ws_base_url()
     if ws_base.startswith(("wss://", "ws://")):
-        connect += " " + ws_base
+        parts = urlsplit(ws_base)  # origin only: a CSP source with a path matches that path alone
+        connect += f" {parts.scheme}://{parts.netloc}"
     script = f"'nonce-{nonce}'" if nonce else "'none'"
     style = f"'nonce-{nonce}'" if nonce else "'unsafe-inline'"
     csp = (f"default-src 'none'; script-src {script}; style-src {style}; "
@@ -318,6 +320,8 @@ def create_app(settings: BridgeSettings, *, store: Store | None = None,
 
     app = FastAPI(title="hermes-ghost-call bridge", docs_url=None, redoc_url=None,
                   openapi_url=None, lifespan=lifespan)
+    if settings.base_path():
+        app.add_middleware(_StripPrefix, prefix=settings.base_path())
     app.state.bridge = bridge
     app.state.store = the_store
     hits: dict[str, deque[float]] = {}
@@ -549,12 +553,15 @@ def _snapshot(store: Store, session: dict) -> dict:
 def _add_shared_routes(app: FastAPI, bridge: Bridge) -> None:
     settings, store = bridge.settings, bridge.store
 
-    def tenant_of(request: Request) -> Tenant | None:
-        auth = request.headers.get("authorization") or ""
-        if not auth.startswith("Bearer ") or len(auth) > 512:
-            return None
-        digest = hashlib.sha256(auth[7:].strip().encode("utf-8")).hexdigest()
-        return settings.tenants.get(digest)
+    authn = Authenticator(settings, clock=bridge.clock)
+
+    async def caller(request: Request) -> Tenant | JSONResponse:
+        tenant = await authn.resolve(request.headers)
+        if tenant is None:
+            return _err(401, "unauthorized", "bad workspace token")
+        if tenant.disabled:
+            return _err(403, "disabled", "this workspace is turned off on the bridge")
+        return tenant
 
     async def body_of(request: Request) -> dict | None:
         raw = await request.body()
@@ -572,15 +579,16 @@ def _add_shared_routes(app: FastAPI, bridge: Bridge) -> None:
 
     @app.get("/v1/health")
     async def v1_health(request: Request) -> Response:
-        if tenant_of(request) is None:
-            return _err(401, "unauthorized", "bad workspace token")
+        tenant = await caller(request)
+        if isinstance(tenant, JSONResponse):
+            return tenant
         return JSONResponse({"ok": True, "phone": bridge.telnyx is not None})
 
     @app.put("/v1/sessions/{ref}")
     async def v1_create(ref: str, request: Request) -> Response:
-        tenant = tenant_of(request)
-        if tenant is None:
-            return _err(401, "unauthorized", "bad workspace token")
+        tenant = await caller(request)
+        if isinstance(tenant, JSONResponse):
+            return tenant
         if not _REF.match(ref):
             return _err(422, "bad_id", "session id must match [A-Za-z0-9_-]{1,64}")
         existing = owned(tenant, ref)
@@ -641,9 +649,9 @@ def _add_shared_routes(app: FastAPI, bridge: Bridge) -> None:
 
     @app.get("/v1/sessions/{ref}/updates")
     async def v1_updates(ref: str, request: Request, cursor: str = "") -> Response:
-        tenant = tenant_of(request)
-        if tenant is None:
-            return _err(401, "unauthorized", "bad workspace token")
+        tenant = await caller(request)
+        if isinstance(tenant, JSONResponse):
+            return tenant
         session = owned(tenant, ref)
         if session is None:
             return _err(404, "not_found", "no such session")
@@ -656,9 +664,9 @@ def _add_shared_routes(app: FastAPI, bridge: Bridge) -> None:
 
     @app.put("/v1/sessions/{ref}/commands/{cmd_id}")
     async def v1_command(ref: str, cmd_id: str, request: Request) -> Response:
-        tenant = tenant_of(request)
-        if tenant is None:
-            return _err(401, "unauthorized", "bad workspace token")
+        tenant = await caller(request)
+        if isinstance(tenant, JSONResponse):
+            return tenant
         session = owned(tenant, ref)
         if session is None or not _REF.match(cmd_id):
             return _err(404, "not_found", "no such session")
@@ -676,9 +684,9 @@ def _add_shared_routes(app: FastAPI, bridge: Bridge) -> None:
 
     @app.post("/v1/sessions/{ref}/hangup")
     async def v1_hangup(ref: str, request: Request) -> Response:
-        tenant = tenant_of(request)
-        if tenant is None:
-            return _err(401, "unauthorized", "bad workspace token")
+        tenant = await caller(request)
+        if isinstance(tenant, JSONResponse):
+            return tenant
         session = owned(tenant, ref)
         if session is None:
             return _err(404, "not_found", "no such session")
@@ -734,6 +742,28 @@ def _add_shared_routes(app: FastAPI, bridge: Bridge) -> None:
 
 
 # ---- helpers ------------------------------------------------------------------------------
+class _StripPrefix:
+    """Serve the same routes with or without the proxy's path prefix (``/bridge/ghost``), so it
+    works whether the proxy strips the prefix or passes it through."""
+
+    def __init__(self, app: Any, prefix: str) -> None:
+        self.app, self.prefix = app, prefix
+
+    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
+        path = scope.get("path") or ""
+        if scope["type"] in ("http", "websocket") and (
+                path == self.prefix or path.startswith(self.prefix + "/")):
+            path = path[len(self.prefix):] or "/"
+            scope = {**scope, "path": path, "raw_path": path.encode("utf-8")}
+        await self.app(scope, receive, send)
+
+
+def factory() -> FastAPI:
+    """``uvicorn --factory hermes_ghost_call.bridge.app:factory``: config from env and the
+    credentials directory only."""
+    return create_app(BridgeSettings.from_env())
+
+
 async def _janitor(bridge: Bridge) -> None:
     while True:
         try:

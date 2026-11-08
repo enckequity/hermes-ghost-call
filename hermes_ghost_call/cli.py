@@ -19,6 +19,9 @@ def setup(parser: argparse.ArgumentParser) -> None:
     sub = parser.add_subparsers(dest="ghost_cmd")
     sub.add_parser("serve", help="Run the ghost bridge (web pages, media, transcription)")
     sub.add_parser("doctor", help="Check env vars, mode and bridge health (names only)")
+    mint = sub.add_parser("bridge-token", help="Mint a shared-bridge workspace token from "
+                                               "GHOST_CALL_BRIDGE_SIGNING_KEY")
+    mint.add_argument("workspace")
 
 
 def make_handler(ctx: Any = None) -> Callable[[argparse.Namespace], int]:
@@ -29,7 +32,9 @@ def make_handler(ctx: Any = None) -> Callable[[argparse.Namespace], int]:
         if cmd == "doctor":
             getter = getattr(ctx, "get_config", None) if ctx is not None else None
             return doctor(configmod.resolve(getter))
-        print("usage: hermes ghost {serve|doctor}")
+        if cmd == "bridge-token":
+            return bridge_token(args.workspace)
+        print("usage: hermes ghost {serve|doctor|bridge-token}")
         return 2
 
     return handler
@@ -39,6 +44,18 @@ def serve() -> int:
     from .bridge.__main__ import main
 
     return main()
+
+
+def bridge_token(workspace: str, environ: Mapping[str, str] | None = None) -> int:
+    from .bridge.auth import mint
+    from .bridge.settings import credential
+
+    try:
+        print(mint(credential("GHOST_CALL_BRIDGE_SIGNING_KEY", environ), workspace))
+    except ValueError as exc:
+        print(f"bridge-token: {exc}")
+        return 2
+    return 0
 
 
 def _default_http_get(url: str, timeout: float) -> int:

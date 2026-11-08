@@ -39,10 +39,15 @@ optional_env:
   - name: TWILIO_FROM_NUMBER
     description: "Twilio mode only: your Twilio number in E.164"
   - name: GHOST_CALL_BRIDGE_URL
-    description: "Shared bridge (https). With GHOST_CALL_BRIDGE_TOKEN set, sessions run there and no local bridge, PUBLIC_BASE_URL or OPENAI_API_KEY is needed"
+    description: "Shared bridge (https). With a bridge credential set, sessions run there and no local bridge, PUBLIC_BASE_URL or OPENAI_API_KEY is needed"
   - name: GHOST_CALL_BRIDGE_TOKEN
-    description: "Shared bridge workspace token"
+    description: "Shared bridge: signed workspace token (owner). When unset, TEAMSHIFT_USAGE_TOKEN and TEAMSHIFT_WORKSPACE_NAME are used"
     secret: true
+  - name: TEAMSHIFT_USAGE_TOKEN
+    description: "Shared bridge: the workspace usage token, sent with TEAMSHIFT_WORKSPACE_NAME when GHOST_CALL_BRIDGE_TOKEN is unset"
+    secret: true
+  - name: TEAMSHIFT_WORKSPACE_NAME
+    description: "Shared bridge: the workspace name that goes with TEAMSHIFT_USAGE_TOKEN"
   - name: OPENROUTER_API_KEY
     description: "Shared bridge only: the workspace's key for the hint and summary model, sent per session and kept in the bridge's memory only"
     secret: true

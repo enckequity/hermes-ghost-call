@@ -95,6 +95,7 @@ APP_JS = r"""
   const sid = body.getAttribute('data-sid');
   const room = body.getAttribute('data-room') === '1';  // speakerphone: no other page
   const token = new URLSearchParams(location.search).get('t') || '';
+  const base = location.pathname.replace(/\/g\/[^/]+\/[^/]+\/?$/, '');  // proxy prefix, if any
   let ac = null, ws = null, stream = null, proc = null, src = null;
   let playHead = 0, sources = [], over = false, wake = null, muteUntil = 0, whispering = 0;
   const SILENT_FRAME = new Uint8Array(160).fill(0xff);
@@ -192,7 +193,7 @@ APP_JS = r"""
 
   function openSocket(info) {
     ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host
-      + '/g/' + encodeURIComponent(sid) + '/ws/' + role);
+      + base + '/g/' + encodeURIComponent(sid) + '/ws/' + role);
     ws.onopen = () => {
       send({ event: 'start', token: info.media_token });
       startMic();
@@ -235,7 +236,7 @@ APP_JS = r"""
       await resumed;
       try { if (navigator.wakeLock) wake = await navigator.wakeLock.request('screen'); } catch (e) {}
       status('Connecting…');
-      const r = await fetch('/g/' + encodeURIComponent(sid) + '/join/' + role, {
+      const r = await fetch(base + '/g/' + encodeURIComponent(sid) + '/join/' + role, {
         method: 'POST', cache: 'no-store', credentials: 'omit',
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ t: token }) });
       if (!r.ok) throw new Error('link');

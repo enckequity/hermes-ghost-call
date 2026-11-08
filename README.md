@@ -241,12 +241,15 @@ Skill: `ghost-call` (start, relay links, then stay quiet).
 
 ## Shared bridge (fork)
 
-Set `GHOST_CALL_BRIDGE_URL` and `GHOST_CALL_BRIDGE_TOKEN` and the plugin runs every session on
+Set `GHOST_CALL_BRIDGE_URL` plus a credential (`GHOST_CALL_BRIDGE_TOKEN`, minted with
+`hermes ghost bridge-token <workspace>`, or the workspace's existing `TEAMSHIFT_USAGE_TOKEN` and
+`TEAMSHIFT_WORKSPACE_NAME`) and the plugin runs every session on
 one shared, multi-tenant bridge instead of a local one: the bridge serves the pages, places
 phone-mode calls, transcribes and writes hints, and the plugin mirrors hints, state, usage and
 the summary into its local store. Consent is mandatory there (a confirm on the user's page, or a
-spoken notice to the other party in phone mode) and Intervene is off. Contract, env names and the
-phone flow: [docs/BRIDGE_API.md](docs/BRIDGE_API.md). With either variable unset, nothing changes.
+spoken notice to the other party in phone mode) and Intervene is off. Contract, env names, deploy
+(`uvicorn --factory hermes_ghost_call.bridge.app:factory`) and the phone flow:
+[docs/BRIDGE_API.md](docs/BRIDGE_API.md). Without the URL and a credential, nothing changes.
 
 ## Safety
 

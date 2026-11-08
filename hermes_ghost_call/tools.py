@@ -56,7 +56,7 @@ class GhostService:
 
     @property
     def remote(self) -> remotemod.RemoteBridge | None:
-        """The shared bridge client when GHOST_CALL_BRIDGE_URL and _TOKEN are set, else None
+        """The shared bridge client when GHOST_CALL_BRIDGE_URL and a credential are set, else None
         (upstream behavior: a co-located bridge on the shared SQLite file)."""
         env = self.environ
         if not remotemod.configured(env):
