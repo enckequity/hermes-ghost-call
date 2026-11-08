@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
 import time
 import urllib.error
@@ -33,14 +34,17 @@ API = "/v1"
 TIMEOUT_S = 10.0
 POLL_S = 1.0
 UNREACHABLE_FAIL_S = 120.0
+BACKOFF_STATUSES = (429, 503)  # the bridge is busy, not gone: wait, never fail the session
+BACKOFF_MIN_S, BACKOFF_MAX_S = 2.0, 10.0
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 _REASON = re.compile(r"^[a-z0-9_]{1,64}$")
 
 
 class BridgeError(Exception):
-    def __init__(self, message: str, status: int = 0) -> None:
+    def __init__(self, message: str, status: int = 0, retry_after: float | None = None) -> None:
         super().__init__(message)
         self.status = status
+        self.retry_after = retry_after
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -79,6 +83,7 @@ class RemoteBridge:
         self._open = (opener or _OPENER).open
         self._last: dict[str, float] = {}
         self._down_since: dict[str, float] = {}
+        self._wait_until: dict[str, float] = {}  # back-off after a 429 or 503
 
     # -- HTTP --
     def _request(self, method: str, path: str, body: dict | None = None) -> dict:
@@ -99,7 +104,8 @@ class RemoteBridge:
             with self._open(req, timeout=self.timeout_s) as resp:
                 raw = resp.read()
         except urllib.error.HTTPError as exc:
-            raise BridgeError(f"HTTP {exc.code}: {_error_text(exc)}", exc.code) from None
+            raise BridgeError(f"HTTP {exc.code}: {_error_text(exc)}", exc.code,
+                              _retry_after(exc)) from None
         except (urllib.error.URLError, OSError) as exc:
             raise BridgeError(f"not reachable ({type(exc).__name__})") from None
         try:
@@ -157,7 +163,8 @@ class RemoteBridge:
         if session is None or (session["state"] == ENDED and session.get("summary") is not None):
             return
         now = time.monotonic()
-        if not force and now - self._last.get(sid, -1e9) < self.poll_s:
+        if now < self._wait_until.get(sid, 0.0) or (
+                not force and now - self._last.get(sid, -1e9) < self.poll_s):
             return
         self._last[sid] = now
         try:
@@ -194,6 +201,12 @@ class RemoteBridge:
 
     def _unreachable(self, store: Store, session: dict, exc: BridgeError) -> None:
         sid = session["id"]
+        if exc.status in BACKOFF_STATUSES:  # reachable and answering: back off, keep the session
+            delay = exc.retry_after if exc.retry_after is not None else random.uniform(  # noqa: S311
+                BACKOFF_MIN_S, BACKOFF_MAX_S)
+            self._wait_until[sid] = time.monotonic() + delay
+            self._down_since.pop(sid, None)
+            return
         log.warning("ghost bridge sync failed for %s: %s", sid, exc)
         gone = exc.status in (401, 403, 404)
         first = self._down_since.setdefault(sid, time.monotonic())
@@ -201,6 +214,15 @@ class RemoteBridge:
             return
         store.end_once(sid, "bridge_rejected" if gone else "bridge_unreachable")
         self._down_since.pop(sid, None)
+
+
+def _retry_after(exc: urllib.error.HTTPError) -> float | None:
+    """Retry-After in seconds (clamped to 1..60), or None when absent or a date."""
+    raw = (exc.headers.get("Retry-After") if exc.headers is not None else None) or ""
+    try:
+        return min(60.0, max(1.0, float(raw)))
+    except ValueError:
+        return None
 
 
 def _error_text(exc: urllib.error.HTTPError) -> str:

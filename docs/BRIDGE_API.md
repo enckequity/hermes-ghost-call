@@ -82,7 +82,13 @@ that misses the success cache, or any failed auth) are limited to 60 a minute pe
 Requests that verify by signature or from the success cache skip that limit, because customer
 workspaces can share an egress IP, and count only against their own workspace: 150 a minute,
 well above a live session's 60 polls plus at most 30 whispers. A forged workspace header never
-counts against the real workspace. A workspace with `"disabled": true` in the
+counts against the real workspace. A usage token that verified in the last 24 hours (up to 10,000 of
+them, oldest dropped first) re-verifies outside the per-IP count and the global budget, so a
+junk flood cannot lock out a live workspace whose 10-minute cache has expired; a `401` drops it
+from that set. Every `429` carries `Retry-After: 5`.
+
+The plugin treats `429` and `503` as back-off, never as a failure: it waits `Retry-After`
+seconds (clamped to 1 to 60), or 2 to 10 s with jitter, and keeps the session. A workspace with `"disabled": true` in the
 overrides gets `403 disabled`. Overrides apply to both paths by workspace name. Sessions are
 keyed by `(workspace, session id)`, so two workspaces may use the same id, and an id that
 belongs to another workspace answers `404`, exactly as if it did not exist.

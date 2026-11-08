@@ -36,6 +36,8 @@ DENY_CACHE_S = 60.0  # a 401 is remembered this long, so a flood of guesses stay
 MAX_CHECKS = 8  # concurrent auth-service calls; the rest wait their turn
 CHECK_BUDGET = 120  # auth-service calls per minute across all workspaces
 CHECK_WINDOW_S = 60.0
+KNOWN_GOOD_S = 86400.0  # a key that verified this recently re-verifies outside the budget
+KNOWN_GOOD_MAX = 10000
 CACHE_MAX = 4096
 _SIG_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")  # 32 bytes, base64url, unpadded
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -97,6 +99,7 @@ class Authenticator:
         self._denied: dict[str, tuple[str, float]] = {}  # same key, 401 answers only
         self._checks = asyncio.Semaphore(MAX_CHECKS)
         self._spent: deque[float] = deque()  # times of recent auth-service calls
+        self._known_good: dict[str, float] = {}  # key -> last success, oldest first
         url = settings.auth_url
         parts = urllib.parse.urlsplit(url)
         ok = parts.scheme == "https" or (parts.scheme == "http" and parts.hostname in _LOCAL_HOSTS)
@@ -132,21 +135,29 @@ class Authenticator:
         denied = self._denied.get(key)
         if denied and denied[1] > now:
             return None
-        if admit is not None and not admit():
-            raise AuthBusy
-        while self._spent and now - self._spent[0] > CHECK_WINDOW_S:
-            self._spent.popleft()
-        if len(self._spent) >= CHECK_BUDGET:
-            raise AuthBusy
-        self._spent.append(now)
+        # A recent success skips the per-IP count and the global budget, so junk floods
+        # cannot lock out a workspace whose 10-minute cache just expired.
+        if now - self._known_good.get(key, -KNOWN_GOOD_S) >= KNOWN_GOOD_S:
+            if admit is not None and not admit():
+                raise AuthBusy
+            while self._spent and now - self._spent[0] > CHECK_WINDOW_S:
+                self._spent.popleft()
+            if len(self._spent) >= CHECK_BUDGET:
+                raise AuthBusy
+            self._spent.append(now)
         async with self._checks:
             status = await asyncio.to_thread(_usage_status, self.usage_url, token, name,
                                              self.settings.auth_timeout_s)
         if status == 401:
+            self._known_good.pop(key, None)
             _remember(self._denied, key, name, now + DENY_CACHE_S, now)
         if status != 200:
             return None
         _remember(self._cache, key, name, now + CACHE_S, now)
+        self._known_good.pop(key, None)  # re-insert at the end: oldest first
+        self._known_good[key] = now
+        if len(self._known_good) > KNOWN_GOOD_MAX:
+            self._known_good.pop(next(iter(self._known_good)))
         return name
 
 

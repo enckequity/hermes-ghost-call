@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import itertools
 import json
 import re
 import time
@@ -336,6 +337,68 @@ def test_verified_workspaces_sharing_an_ip_are_not_limited_by_it(settings, store
 def test_live_session_polling_stays_under_the_workspace_limit():
     per_minute = 60 / remote.POLL_S + 60 / appmod.SPEAK_GAP_S  # updates plus max whispers
     assert per_minute <= appmod.WORKSPACE_RATE_LIMIT * 0.6
+
+
+def test_known_good_workspace_reverifies_outside_a_spent_budget(settings, store, phone,
+                                                                fake_auth, clock):
+    settings.trust_proxy = True
+    app = usage_app(settings, store, phone, fake_auth, clock)
+
+    def spend_budget(start: int) -> None:
+        for i in range(authmod.CHECK_BUDGET):  # junk from spoofed IPs uses up the minute
+            h = {**usage_hdr(token="ts_usg_" + f"{start + i:064x}"),
+                 "X-Forwarded-For": f"6.{i}.{start % 250}.1"}
+            assert c.get("/v1/health", headers=h).status_code == 401
+
+    with TestClient(app) as c:
+        assert c.get("/v1/health", headers=usage_hdr()).status_code == 200
+        clock.advance(601)  # the 10-minute success cache has expired
+        spend_budget(1000)
+        junk = {**usage_hdr(token="ts_usg_" + "e" * 64), "X-Forwarded-For": "7.7.7.7"}
+        assert c.get("/v1/health", headers=junk).status_code == 429
+        n = len(fake_auth.hits)
+        assert c.get("/v1/health", headers=usage_hdr()).status_code == 200  # known good
+        assert len(fake_auth.hits) == n + 1  # it really re-verified
+        clock.advance(601)
+        fake_auth.status = 401  # the token was revoked
+        assert c.get("/v1/health", headers=usage_hdr()).status_code == 401
+        clock.advance(61)
+        fake_auth.status = 200
+        spend_budget(5000)
+        r = c.get("/v1/health", headers=usage_hdr())
+        assert r.status_code == 429 and r.headers["retry-after"] == "5"  # no longer known good
+
+
+def test_client_backs_off_on_429_and_keeps_the_session(tmp_path, clock, monkeypatch):
+    local = Store(path=tmp_path / "p" / "ghost.db", clock=clock)
+    s = local.create_session(goal="g", callee_label="x", mode="web", config={},
+                             provider={"remote": True})
+    now = [1000.0]
+    monkeypatch.setattr(remote.time, "monotonic", lambda: now[0])
+
+    class Busy:
+        def __init__(self, retry_after):
+            self.retry_after, self.calls = retry_after, []
+
+        def open(self, req, timeout=None):
+            self.calls.append(now[0])
+            hdrs = {"Retry-After": self.retry_after} if self.retry_after else {}
+            raise urllib.error.HTTPError(req.full_url, 429, "busy", hdrs,
+                                         io.BytesIO(b'{"error": {"message": "slow down"}}'))
+
+    env = {remote.URL_ENV: BASE, remote.TOKEN_ENV: TOKEN_A}
+    for retry_after, low, high in (("5", 36, 37), ("", 18, 91)):
+        opener = Busy(retry_after)
+        client = remote.RemoteBridge(env, opener=opener)
+        start = now[0]
+        while now[0] - start < 180:  # three minutes of 429s, the watcher ticking every second
+            client.sync(local, s["id"])
+            now[0] += 1.0
+        assert local.get_session(s["id"])["state"] != ENDED
+        assert low <= len(opener.calls) <= high
+        gaps = [b - a for a, b in itertools.pairwise(opener.calls)]
+        assert min(gaps) >= (5 if retry_after else 2)
+    local.close()
 
 
 def test_auth_service_budget_is_global(settings, store, phone, fake_auth, clock):
