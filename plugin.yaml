@@ -1,7 +1,7 @@
 manifest_version: 2
 name: hermes-ghost-call
 version: "0.1.0"
-description: "Ghost Call Copilot: a real-time AI assistant on your calls. Hermes listens and whispers one-line hints to you only; the other side never hears it."
+description: "Ghost Call Copilot: a real-time AI assistant on your calls. It listens and whispers one-line hints to you only; the other side never hears it."
 author: winchxyz
 kind: standalone
 license: MIT
@@ -21,22 +21,36 @@ python_dependencies:
   - "uvicorn[standard]>=0.29,<1"
   - "websockets>=14,<16"
   - "httpx>=0.27,<1"
+  - "cryptography>=42,<51"
 requires_env:
   - name: OPENAI_API_KEY
-    description: "OpenAI key: realtime transcription, the hint model, earpiece TTS and the summary"
+    description: "Speech and model API key: realtime transcription, the hint model, earpiece speech and the summary"
     url: "https://platform.openai.com/api-keys"
     secret: true
   - name: PUBLIC_BASE_URL
     description: "Public URL where the ghost bridge is reachable (http://localhost:8766 for a same-machine demo)"
 optional_env:
   - name: TWILIO_ACCOUNT_SID
-    description: "Twilio mode only: account SID"
+    description: "Phone mode only: account SID"
     secret: true
   - name: TWILIO_AUTH_TOKEN
-    description: "Twilio mode only: auth token"
+    description: "Phone mode only: auth token"
     secret: true
   - name: TWILIO_FROM_NUMBER
-    description: "Twilio mode only: your Twilio number in E.164"
+    description: "Phone mode only: the calling number in E.164"
+  - name: GHOST_CALL_BRIDGE_URL
+    description: "Shared bridge (https). With a bridge credential set, sessions run there and no local bridge, public URL or speech key is needed"
+  - name: GHOST_CALL_BRIDGE_TOKEN
+    description: "Shared bridge: signed workspace token (owner). When unset, TEAMSHIFT_USAGE_TOKEN and TEAMSHIFT_WORKSPACE_NAME are used"
+    secret: true
+  - name: TEAMSHIFT_USAGE_TOKEN
+    description: "Shared bridge: the workspace usage token, sent with TEAMSHIFT_WORKSPACE_NAME when GHOST_CALL_BRIDGE_TOKEN is unset"
+    secret: true
+  - name: TEAMSHIFT_WORKSPACE_NAME
+    description: "Shared bridge: the workspace name that goes with TEAMSHIFT_USAGE_TOKEN"
+  - name: OPENROUTER_API_KEY
+    description: "Shared bridge only: the workspace's key for the hint and summary model, sent per session and kept in the bridge's memory only"
+    secret: true
 # Developer-only env (deliberately not in requires_env; never set by the model):
 #   HERMES_GHOST_TEST_ALLOWLIST  comma-separated E.164 numbers Twilio mode may dial.
 #                                Unset or empty means ALL dialing is refused. Web mode dials nothing.
@@ -59,15 +73,15 @@ config_schema:
   model:
     type: string
     default: "gpt-4.1-mini"
-    description: "Fast OpenAI text model for hints and the summary"
+    description: "Fast text model for hints and the summary"
   stt_model:
     type: string
     default: "gpt-4o-mini-transcribe"
-    description: "OpenAI realtime transcription model"
+    description: "Realtime transcription model"
   voice:
     type: string
     default: "coral"
-    description: "OpenAI TTS voice for the earpiece whisper"
+    description: "Voice for the earpiece whisper"
   max_duration_s:
     type: integer
     default: 900
@@ -85,4 +99,8 @@ config_schema:
     description: "Your name, used only in the Intervene AI disclosure and the follow-up SMS draft"
   user_number:
     type: string
-    description: "Twilio mode only: your own phone number in E.164 (the first leg Twilio rings)"
+    description: "Phone mode only: your own phone number in E.164 (the first leg that rings)"
+  hint_model:
+    type: string
+    default: ""
+    description: "Shared bridge only: hint and summary model id ('' uses the bridge's default)"

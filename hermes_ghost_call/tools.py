@@ -16,6 +16,7 @@ from typing import Any
 from . import config as configmod
 from . import hints as hintsmod
 from . import mode as modemod
+from . import remote as remotemod
 from . import safety
 from . import secrets as secretsmod
 from .session import CREATED, ENDED, LIVE, Store, elapsed
@@ -40,6 +41,7 @@ class GhostService:
         self.start_watchers = start_watchers
         self.watchers: dict[str, Any] = {}
         self._lock = threading.Lock()
+        self._remote: remotemod.RemoteBridge | None = None
 
     @property
     def store(self) -> Store:
@@ -51,6 +53,17 @@ class GhostService:
     @property
     def environ(self) -> Mapping[str, str]:
         return self._environ if self._environ is not None else secretsmod.Environ()
+
+    @property
+    def remote(self) -> remotemod.RemoteBridge | None:
+        """The shared bridge client when GHOST_CALL_BRIDGE_URL and a credential are set, else None
+        (upstream behavior: a co-located bridge on the shared SQLite file)."""
+        env = self.environ
+        if not remotemod.configured(env):
+            return None
+        if self._remote is None:
+            self._remote = remotemod.RemoteBridge(env)
+        return self._remote
 
     def secret(self, name: str) -> str:
         return secretsmod.get(name, self._environ)
@@ -100,6 +113,10 @@ class GhostService:
         if self.store.sessions_since(self.now() - DAY_S) >= cfg["daily_session_limit"]:
             return {"ok": False, "error": "daily ghost session limit reached "
                                           f"({cfg['daily_session_limit']} per 24 h)."}
+        if self.remote is not None:
+            return self._start_remote(goal=goal, label=label, mode=mode, cfg=cfg,
+                                      callee_number=callee_number,
+                                      origin_session=origin_session)
         env = self.environ
         numbers = bool(cfg["user_number"] and callee_number)
         chosen = modemod.resolve(env, mode, has_numbers=numbers)
@@ -141,12 +158,64 @@ class GhostService:
                                    "party is dialed into the call. Ghost only listens.")
         if not self.secret("OPENAI_API_KEY"):
             out["warning"] = "OPENAI_API_KEY is not set: the call works, but no hints."
+        self._watch(session["id"])
+        return out
+
+    def _watch(self, sid: str) -> None:
         if self.start_watchers:
             from .watcher import TickerWatcher
 
-            watcher = TickerWatcher(self, session["id"])
-            self.watchers[session["id"]] = watcher
+            watcher = TickerWatcher(self, sid)
+            self.watchers[sid] = watcher
             watcher.start()
+
+    def _start_remote(self, *, goal: str, label: str, mode: str, cfg: dict,
+                      callee_number: str, origin_session: str) -> dict:
+        """Start on the shared bridge: it serves the pages, places phone calls and runs hints;
+        the local store mirrors it, so the ticker, summary and tools work unchanged."""
+        assert self.remote is not None
+        if mode == modemod.ROOM:
+            name = modemod.ROOM
+        elif callee_number or mode in (modemod.TWILIO, "phone"):
+            name = "phone"
+        else:
+            name = modemod.WEB
+        numbers: dict[str, str] | None = None
+        if name == "phone":
+            numbers = {}
+            for leg, number in (("you", cfg["user_number"]), ("them", callee_number)):
+                e164, why = safety.validate_number(number)
+                if e164 is None:  # the bridge applies the block and allow lists itself
+                    return {"ok": False, "error": f"phone mode refused the {leg} number: "
+                                                  f"{why or 'missing'} (set user_number)."}
+                numbers[leg] = e164
+        session = self.store.create_session(goal=goal, callee_label=label, mode=name,
+                                            config=cfg, origin_session=origin_session,
+                                            provider={"remote": True})
+        try:
+            resp = self.remote.create(session, numbers=numbers)
+        except remotemod.BridgeError as exc:
+            self.store.end_once(session["id"], "bridge_error")
+            return {"ok": False, "error": f"call service error: {exc}"}
+        raw_links = resp.get("links") if isinstance(resp.get("links"), dict) else {}
+        links = {r: u for r, u in raw_links.items() if r in ("you", "them")
+                 and isinstance(u, str) and u.startswith(("https://", "http://localhost"))}
+        out: dict[str, Any] = {"ok": True, "session_id": session["id"], "mode": name,
+                               "hint_mode": cfg["hint_mode"],
+                               "max_duration_s": cfg["max_duration_s"], "links": links}
+        tell = ("Tell the other person the call is being transcribed, then tap the confirm "
+                "button on your page; nothing is transcribed before that.")
+        if name == modemod.WEB:
+            out["instructions"] = ("Open 'you' yourself with headphones; send 'them' to the "
+                                   "other party. Each link works once, for 10 minutes. " + tell)
+        elif name == modemod.ROOM:
+            out["instructions"] = ("Open the link on a laptop or tablet next to your call on "
+                                   "speaker and tap Start listening. " + tell)
+        else:
+            out["instructions"] = ("Your phone rings first; pick up and the other party is "
+                                   "dialed. They hear that the call is being transcribed "
+                                   "before anything is. Ghost only listens.")
+        self._watch(session["id"])
         return out
 
     def status(self, sid: str | None) -> dict:
@@ -168,6 +237,13 @@ class GhostService:
             return {"ok": False, "error": "no ghost session to end."}
         if s["state"] == ENDED:
             return {"ok": True, "session_id": s["id"], "state": ENDED, "already": True}
+        remote = self.remote if (s.get("provider") or {}).get("remote") else None
+        if remote is not None:  # the bridge ends the call; the summary arrives by sync
+            sent = remote.hangup(s["id"])
+            self.store.request_hangup(s["id"])
+            self.store.end_once(s["id"], "hangup")
+            return {"ok": True, "session_id": s["id"], "state": ENDED,
+                    **({} if sent else {"note": "ended locally"})}
         self.store.request_hangup(s["id"])
         self.store.enqueue(s["id"], "hangup")
         deadline = time.monotonic() + HANGUP_WAIT_S
@@ -313,11 +389,11 @@ SCHEMAS: dict[str, dict] = {
     "ghost_start": {
         "name": "ghost_start",
         "description": (
-            "Start a Ghost Call: Hermes silently listens to the user's own phone call and pushes "
-            "one-line hints to the user only. Hermes never joins the call as a voice and never "
-            "calls anyone as an AI persona. Returns two one-time join links in web mode (give "
-            "'you' to the user, 'them' goes to the other party) or, in Twilio mode, rings the "
-            "user's phone first. Room mode (speakerphone) returns one link: the user opens it "
+            "Start a Ghost Call: the assistant silently listens to the user's own phone call and "
+            "pushes one-line hints to the user only. It never joins the call as a voice and "
+            "never calls anyone as an AI persona. Returns two one-time join links in web mode "
+            "(give 'you' to the user, 'them' goes to the other party) or, in phone mode, rings "
+            "the user's phone first. Room mode (speakerphone) returns one link: the user opens it "
             "on a laptop next to a phone call on speaker (any call app), and Ghost listens "
             "through that one microphone. After starting, stay quiet: hints are pushed "
             "automatically; do not ask the user questions during the call."),
@@ -326,10 +402,10 @@ SCHEMAS: dict[str, dict] = {
                      "with facts, e.g. 'book a table Friday 8pm for 4, budget $80, name Winch'."},
             "callee_label": {"type": "string", "description": "Who is on the other side, "
                              "e.g. 'Bella Napoli'."},
-            "mode": {"type": "string", "enum": ["web", "twilio", "room"], "description":
-                     "web (default unless Twilio is fully configured), twilio, or room "
-                     "(speakerphone: one page listens to a call on speaker)."},
-            "callee_number": {"type": "string", "description": "Twilio mode only: E.164."}},
+            "mode": {"type": "string", "enum": ["web", "phone", "room"], "description":
+                     "web (default unless phone calling is set up), phone (rings both sides), "
+                     "or room (speakerphone: one page listens to a call on speaker)."},
+            "callee_number": {"type": "string", "description": "Phone mode only: E.164."}},
             "required": ["goal"]}},
     "ghost_status": {
         "name": "ghost_status",

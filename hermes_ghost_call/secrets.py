@@ -16,6 +16,8 @@ from collections.abc import Iterator, Mapping
 SECRET_NAMES = frozenset({
     "OPENAI_API_KEY", "PUBLIC_BASE_URL",
     "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER",
+    "GHOST_CALL_BRIDGE_URL", "GHOST_CALL_BRIDGE_TOKEN", "OPENROUTER_API_KEY",
+    "GHOST_CALL_TELNYX_API_KEY", "GHOST_CALL_BRIDGE_SIGNING_KEY", "TEAMSHIFT_USAGE_TOKEN",
 })
 
 
@@ -55,7 +57,7 @@ def scrub(text: str, environ: Mapping[str, str] | None = None) -> str:
     """Replace any secret value that leaked into ``text`` (an exception message, say)."""
     out = str(text or "")
     for name in SECRET_NAMES:
-        if name == "PUBLIC_BASE_URL":
+        if name in ("PUBLIC_BASE_URL", "GHOST_CALL_BRIDGE_URL"):
             continue
         value = get(name, environ)
         if value and len(value) >= 6 and value in out:

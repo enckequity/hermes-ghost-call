@@ -140,6 +140,9 @@ def intervene_refusal(session: dict | None, *, unattended: bool) -> str:
         return "Intervene is always blocked in cron or unattended runs."
     if session is None:
         return "no such ghost session."
+    if session.get("workspace") or session.get("mode") == "phone" or \
+            (session.get("provider") or {}).get("remote"):
+        return "Intervene is disabled on the shared call service. Ghost only whispers to you."
     if session.get("state") != "live":
         return "the ghost session is not live."
     if session.get("mode") == "room":

@@ -16,6 +16,7 @@ dependencies = [
   "uvicorn[standard]>=0.29,<1",
   "websockets>=14,<16",
   "httpx>=0.27,<1",
+  "cryptography>=42,<51",  # Ed25519 webhook signatures (shared bridge phone mode)
 ]
 
 [project.urls]

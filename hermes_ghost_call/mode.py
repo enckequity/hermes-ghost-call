@@ -41,7 +41,7 @@ def resolve(environ: Mapping[str, str], requested: str = "", *, has_numbers: boo
         return Mode(WEB, web_missing, "explicit")
     if want == ROOM:
         return Mode(ROOM, web_missing, "explicit")
-    if want == TWILIO:
+    if want in (TWILIO, "phone"):  # "phone" is the name the tool schema shows
         if not twilio_missing:
             return Mode(TWILIO, [], "explicit")
         return Mode(WEB, web_missing, "fallback",
