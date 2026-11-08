@@ -77,9 +77,12 @@ kept on the bridge.
 Anything malformed or unverified gets `401`. A `401` from the auth service is remembered for
 60 s, at most 8 auth checks run at once, and the auth service gets at most 120 calls a minute
 across all workspaces (past that, `429 rate_limited` before any call; verified workspaces keep
-working through the success cache). Every `/v1` request is limited to 60 a minute per client
-IP before auth, and to 60 a minute per workspace only after the token is verified, so a forged
-workspace header cannot lock a real workspace out. A workspace with `"disabled": true` in the
+working through the success cache). Requests that cost work (an auth-service lookup
+that misses the success cache, or any failed auth) are limited to 60 a minute per client IP.
+Requests that verify by signature or from the success cache skip that limit, because customer
+workspaces can share an egress IP, and count only against their own workspace: 150 a minute,
+well above a live session's 60 polls plus at most 30 whispers. A forged workspace header never
+counts against the real workspace. A workspace with `"disabled": true` in the
 overrides gets `403 disabled`. Overrides apply to both paths by workspace name. Sessions are
 keyed by `(workspace, session id)`, so two workspaces may use the same id, and an id that
 belongs to another workspace answers `404`, exactly as if it did not exist.

@@ -46,7 +46,8 @@ PAGE_MODES = ("web", "room")  # modes served by browser pages (room: the You pag
 SHARED_MODES = (*PAGE_MODES, "phone")  # what a workspace may start on the shared bridge
 MAX_API_BODY = 16384
 DAY_S = 86400.0
-API_RATE_LIMIT = 60  # /v1 requests per minute, per client IP and per verified workspace
+API_RATE_LIMIT = 60  # per client IP, per minute: auth lookups and failed auth only
+WORKSPACE_RATE_LIMIT = 150  # per verified workspace, per minute; a live session polls 60/min
 SPEAK_GAP_S = 2.0
 SEEN_MAX = 256
 _REF = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -556,18 +557,26 @@ def _add_shared_routes(app: FastAPI, bridge: Bridge) -> None:
     api_hits: dict[str, deque[float]] = {}
 
     async def caller(request: Request) -> Tenant | JSONResponse:
-        # Per IP before auth; per workspace only once verified, so a forged header cannot
-        # lock a real workspace out.
-        if _over(api_hits, "ip:" + _client_ip(request, settings.trust_proxy), API_RATE_LIMIT,
-                 bridge.clock()):
-            return _err(429, "rate_limited", "too many requests, slow down")
+        # The per-IP limit counts only requests that cost work (an auth-service lookup, or a
+        # failed auth): workspaces can share an egress IP, and verified ones must not lock each
+        # other out. Verified requests count against their own workspace only.
+        ip_key = "ip:" + _client_ip(request, settings.trust_proxy)
+        counted = False
+
+        def admit() -> bool:
+            nonlocal counted
+            counted = True
+            return not _over(api_hits, ip_key, API_RATE_LIMIT, bridge.clock())
+
         try:
-            tenant = await authn.resolve(request.headers)
+            tenant = await authn.resolve(request.headers, admit=admit)
         except AuthBusy:
             return _err(429, "rate_limited", "too many sign-in checks, try again shortly")
         if tenant is None:
+            if not counted and not admit():
+                return _err(429, "rate_limited", "too many requests, slow down")
             return _err(401, "unauthorized", "bad workspace token")
-        if _over(api_hits, "ws:" + tenant.workspace, API_RATE_LIMIT, bridge.clock()):
+        if _over(api_hits, "ws:" + tenant.workspace, WORKSPACE_RATE_LIMIT, bridge.clock()):
             return _err(429, "rate_limited", "too many requests, slow down")
         if tenant.disabled:
             return _err(403, "disabled", "this workspace is turned off on the bridge")

@@ -22,6 +22,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from hermes_ghost_call import commands, hooks, remote, safety, tools
 from hermes_ghost_call import summary as summarymod
+from hermes_ghost_call.bridge import app as appmod
 from hermes_ghost_call.bridge import auth as authmod
 from hermes_ghost_call.bridge import live, telnyx_io, webpage
 from hermes_ghost_call.bridge.app import create_app, factory
@@ -303,13 +304,38 @@ def test_v1_is_rate_limited_per_ip_before_auth_and_per_verified_workspace(settin
             assert c.get("/v1/health", headers=h).status_code == 401
         assert c.get("/v1/health", headers={**usage_hdr(), "X-Forwarded-For": "5.5.5.5"}
                      ).status_code == 200
-        for i in range(60):  # one verified workspace, spread over many IPs
+        for i in range(appmod.WORKSPACE_RATE_LIMIT):  # one verified workspace, many IPs
             h = {**auth(TOKEN_B), "X-Forwarded-For": f"2.2.{i}.1"}
             assert c.get("/v1/health", headers=h).status_code == 200
         assert c.get("/v1/health", headers={**auth(TOKEN_B), "X-Forwarded-For": "3.3.3.3"}
                      ).status_code == 429
         assert c.get("/v1/health", headers={**auth(), "X-Forwarded-For": "3.3.3.3"}
                      ).status_code == 200  # other workspaces are unaffected
+
+
+def test_verified_workspaces_sharing_an_ip_are_not_limited_by_it(settings, store, phone,
+                                                                 fake_auth, clock):
+    settings.trust_proxy = True
+    app = usage_app(settings, store, phone, fake_auth, clock)
+    ip = {"X-Forwarded-For": "9.9.9.9"}
+    with TestClient(app) as c:
+        for i in range(100):  # one minute, one egress IP, two verified workspaces
+            h = {**(auth() if i % 2 else usage_hdr()), **ip}
+            assert c.get("/v1/health", headers=h).status_code == 200, i
+        assert len(fake_auth.hits) == 1  # one lookup, then the success cache
+        codes = [c.get("/v1/health", headers={**usage_hdr(token="ts_usg_" + f"{i:064x}"), **ip}
+                       ).status_code for i in range(70)]
+        # the one lookup above counted; junk gets 59 more tries, then 429
+        assert codes == [401] * 59 + [429] * 11
+        bad_sig = [c.get("/v1/health", headers={**auth(TOKEN_A[:-1] + "x"), **ip}).status_code
+                   for _ in range(3)]
+        assert bad_sig == [429] * 3  # failed HMAC auth counts too
+        assert c.get("/v1/health", headers={**auth(), **ip}).status_code == 200
+
+
+def test_live_session_polling_stays_under_the_workspace_limit():
+    per_minute = 60 / remote.POLL_S + 60 / appmod.SPEAK_GAP_S  # updates plus max whispers
+    assert per_minute <= appmod.WORKSPACE_RATE_LIMIT * 0.6
 
 
 def test_auth_service_budget_is_global(settings, store, phone, fake_auth, clock):

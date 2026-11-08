@@ -105,20 +105,23 @@ class Authenticator:
     def tenant(self, workspace: str) -> Tenant:
         return self.settings.overrides.get(workspace) or Tenant(workspace=workspace)
 
-    async def resolve(self, headers: Mapping[str, str]) -> Tenant | None:
-        """The calling workspace (possibly ``disabled``), or None: refuse with 401. Raises
-        AuthBusy when a usage token would need the auth service and its budget is spent."""
+    async def resolve(self, headers: Mapping[str, str], *,
+                      admit: Callable[[], bool] | None = None) -> Tenant | None:
+        """The calling workspace (possibly ``disabled``), or None: refuse with 401. Before an
+        auth-service lookup, ``admit()`` must allow it (the caller's per-IP limit). Raises
+        AuthBusy when admit refuses or the global lookup budget is spent."""
         auth = headers.get("authorization") or ""
         if not auth.startswith("Bearer ") or len(auth) > 512:
             return None
         token = auth[7:].strip()
         if token.startswith(USAGE_PREFIX):
-            name = await self._usage(token, (headers.get(WORKSPACE_HEADER) or "").strip())
+            name = await self._usage(token, (headers.get(WORKSPACE_HEADER) or "").strip(), admit)
         else:
             name = signed_workspace(self.settings.signing_key, token)
         return self.tenant(name) if name else None
 
-    async def _usage(self, token: str, name: str) -> str | None:
+    async def _usage(self, token: str, name: str,
+                     admit: Callable[[], bool] | None = None) -> str | None:
         if not self.usage_url or not USAGE_TOKEN_RE.match(token) or not USAGE_NAME_RE.match(name):
             return None
         key = hashlib.sha256((name + token).encode("utf-8")).hexdigest()
@@ -129,6 +132,8 @@ class Authenticator:
         denied = self._denied.get(key)
         if denied and denied[1] > now:
             return None
+        if admit is not None and not admit():
+            raise AuthBusy
         while self._spent and now - self._spent[0] > CHECK_WINDOW_S:
             self._spent.popleft()
         if len(self._spent) >= CHECK_BUDGET:
