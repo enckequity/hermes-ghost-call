@@ -75,9 +75,11 @@ kept on the bridge.
    sha256(name + token), so a revoked token can keep working for up to 10 minutes.
 
 Anything malformed or unverified gets `401`. A `401` from the auth service is remembered for
-60 s, and at most 8 auth checks run at once. Every `/v1` request is rate-limited first, to 60
-a minute per client IP and per claimed workspace (`429 rate_limited`), so a flood of guessed
-tokens never reaches the auth service. A workspace with `"disabled": true` in the
+60 s, at most 8 auth checks run at once, and the auth service gets at most 120 calls a minute
+across all workspaces (past that, `429 rate_limited` before any call; verified workspaces keep
+working through the success cache). Every `/v1` request is limited to 60 a minute per client
+IP before auth, and to 60 a minute per workspace only after the token is verified, so a forged
+workspace header cannot lock a real workspace out. A workspace with `"disabled": true` in the
 overrides gets `403 disabled`. Overrides apply to both paths by workspace name. Sessions are
 keyed by `(workspace, session id)`, so two workspaces may use the same id, and an id that
 belongs to another workspace answers `404`, exactly as if it did not exist.

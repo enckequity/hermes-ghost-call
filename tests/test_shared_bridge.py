@@ -283,10 +283,11 @@ async def test_auth_checks_are_capped_at_eight_at_a_time(settings, fake_auth):
     assert fake_auth.peak == authmod.MAX_CHECKS  # concurrent, but never more than the cap
 
 
-def test_v1_is_rate_limited_per_ip_and_per_workspace_before_auth(settings, store, phone,
-                                                                  fake_auth):
+def test_v1_is_rate_limited_per_ip_before_auth_and_per_verified_workspace(settings, store,
+                                                                           phone, fake_auth,
+                                                                           clock):
     settings.trust_proxy = True
-    app = usage_app(settings, store, phone, fake_auth)
+    app = usage_app(settings, store, phone, fake_auth, clock)
     with TestClient(app) as c:
         for i in range(60):  # one IP, a different made-up workspace each time
             h = {**usage_hdr(token="ts_usg_" + f"{i:064x}"), "X-Forwarded-For": "1.1.1.1"}
@@ -295,13 +296,41 @@ def test_v1_is_rate_limited_per_ip_and_per_workspace_before_auth(settings, store
         h = {**usage_hdr(token="ts_usg_" + "f" * 64), "X-Forwarded-For": "1.1.1.1"}
         assert c.get("/v1/health", headers=h).status_code == 429
         assert len(fake_auth.hits) == n  # limited before the auth service is asked
-        for i in range(60):  # one workspace, spread over many IPs
+        clock.advance(61)  # a fresh minute of auth-service budget
+        for i in range(61):  # forged requests naming the victim never count against it
+            h = {**usage_hdr(token="ts_usg_" + f"{i + 100:064x}"),
+                 "X-Forwarded-For": f"4.4.{i}.1"}
+            assert c.get("/v1/health", headers=h).status_code == 401
+        assert c.get("/v1/health", headers={**usage_hdr(), "X-Forwarded-For": "5.5.5.5"}
+                     ).status_code == 200
+        for i in range(60):  # one verified workspace, spread over many IPs
             h = {**auth(TOKEN_B), "X-Forwarded-For": f"2.2.{i}.1"}
             assert c.get("/v1/health", headers=h).status_code == 200
         assert c.get("/v1/health", headers={**auth(TOKEN_B), "X-Forwarded-For": "3.3.3.3"}
                      ).status_code == 429
         assert c.get("/v1/health", headers={**auth(), "X-Forwarded-For": "3.3.3.3"}
                      ).status_code == 200  # other workspaces are unaffected
+
+
+def test_auth_service_budget_is_global(settings, store, phone, fake_auth, clock):
+    settings.trust_proxy = True
+    app = usage_app(settings, store, phone, fake_auth, clock)
+    with TestClient(app) as c:
+        assert c.get("/v1/health", headers=usage_hdr()).status_code == 200  # now cached
+        for i in range(authmod.CHECK_BUDGET - 1):  # spoofed IPs, so no per-IP limit applies
+            h = {**usage_hdr(token="ts_usg_" + f"{i:064x}"), "X-Forwarded-For": f"6.{i}.0.1"}
+            assert c.get("/v1/health", headers=h).status_code == 401
+        n = len(fake_auth.hits)
+        assert n == authmod.CHECK_BUDGET
+        h = {**usage_hdr(token="ts_usg_" + "e" * 64), "X-Forwarded-For": "7.7.7.7"}
+        r = c.get("/v1/health", headers=h)
+        assert r.status_code == 429 and len(fake_auth.hits) == n  # refused before any GET
+        assert c.get("/v1/health", headers={**usage_hdr(), "X-Forwarded-For": "8.8.8.8"}
+                     ).status_code == 200  # verified workspaces ride the success cache
+        assert c.get("/v1/health", headers={**auth(), "X-Forwarded-For": "8.8.8.8"}
+                     ).status_code == 200  # signed tokens never need the auth service
+        clock.advance(61)
+        assert c.get("/v1/health", headers=h).status_code == 401  # budget refilled
 
 
 def test_usage_path_is_off_without_an_auth_url(app):

@@ -19,6 +19,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import deque
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -33,6 +34,8 @@ USAGE_PATH = "/api/workspace/usage"
 CACHE_S = 600.0
 DENY_CACHE_S = 60.0  # a 401 is remembered this long, so a flood of guesses stays local
 MAX_CHECKS = 8  # concurrent auth-service calls; the rest wait their turn
+CHECK_BUDGET = 120  # auth-service calls per minute across all workspaces
+CHECK_WINDOW_S = 60.0
 CACHE_MAX = 4096
 _SIG_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")  # 32 bytes, base64url, unpadded
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -58,6 +61,10 @@ def signed_workspace(key: str, token: str) -> str | None:
     if not key or not dot or not WORKSPACE_RE.match(workspace) or not _SIG_RE.match(sig):
         return None
     return workspace if hmac.compare_digest(sig, sign(key, workspace)) else None
+
+
+class AuthBusy(Exception):
+    """The auth-service budget is spent: answer 429, never call it."""
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -89,6 +96,7 @@ class Authenticator:
         self._cache: dict[str, tuple[str, float]] = {}  # sha256(name+token) -> (name, expiry)
         self._denied: dict[str, tuple[str, float]] = {}  # same key, 401 answers only
         self._checks = asyncio.Semaphore(MAX_CHECKS)
+        self._spent: deque[float] = deque()  # times of recent auth-service calls
         url = settings.auth_url
         parts = urllib.parse.urlsplit(url)
         ok = parts.scheme == "https" or (parts.scheme == "http" and parts.hostname in _LOCAL_HOSTS)
@@ -98,7 +106,8 @@ class Authenticator:
         return self.settings.overrides.get(workspace) or Tenant(workspace=workspace)
 
     async def resolve(self, headers: Mapping[str, str]) -> Tenant | None:
-        """The calling workspace (possibly ``disabled``), or None: refuse with 401."""
+        """The calling workspace (possibly ``disabled``), or None: refuse with 401. Raises
+        AuthBusy when a usage token would need the auth service and its budget is spent."""
         auth = headers.get("authorization") or ""
         if not auth.startswith("Bearer ") or len(auth) > 512:
             return None
@@ -120,6 +129,11 @@ class Authenticator:
         denied = self._denied.get(key)
         if denied and denied[1] > now:
             return None
+        while self._spent and now - self._spent[0] > CHECK_WINDOW_S:
+            self._spent.popleft()
+        if len(self._spent) >= CHECK_BUDGET:
+            raise AuthBusy
+        self._spent.append(now)
         async with self._checks:
             status = await asyncio.to_thread(_usage_status, self.usage_url, token, name,
                                              self.settings.auth_timeout_s)

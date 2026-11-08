@@ -29,7 +29,7 @@ from .. import summary as summarymod
 from ..llm import OpenAIClient
 from ..session import ACTIVE_STATES, CREATED, ENDED, LIVE, ROLES, Store, elapsed
 from . import telnyx_io, twilio_io, webpage
-from .auth import Authenticator
+from .auth import AuthBusy, Authenticator
 from .live import GhostRuntime
 from .settings import DEFAULT_HINT_BASE_URL, DEFAULT_HINT_MODEL, BridgeSettings, Tenant
 from .stt import SttConnect, make_openai_connect
@@ -46,7 +46,7 @@ PAGE_MODES = ("web", "room")  # modes served by browser pages (room: the You pag
 SHARED_MODES = (*PAGE_MODES, "phone")  # what a workspace may start on the shared bridge
 MAX_API_BODY = 16384
 DAY_S = 86400.0
-API_RATE_LIMIT = 60  # /v1 requests per minute, per client IP and per claimed workspace
+API_RATE_LIMIT = 60  # /v1 requests per minute, per client IP and per verified workspace
 SPEAK_GAP_S = 2.0
 SEEN_MAX = 256
 _REF = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -556,14 +556,19 @@ def _add_shared_routes(app: FastAPI, bridge: Bridge) -> None:
     api_hits: dict[str, deque[float]] = {}
 
     async def caller(request: Request) -> Tenant | JSONResponse:
-        now = bridge.clock()  # both limits run before any auth-service call
+        # Per IP before auth; per workspace only once verified, so a forged header cannot
+        # lock a real workspace out.
         if _over(api_hits, "ip:" + _client_ip(request, settings.trust_proxy), API_RATE_LIMIT,
-                 now) or _over(api_hits, "ws:" + _claimed_workspace(request), API_RATE_LIMIT,
-                               now):
+                 bridge.clock()):
             return _err(429, "rate_limited", "too many requests, slow down")
-        tenant = await authn.resolve(request.headers)
+        try:
+            tenant = await authn.resolve(request.headers)
+        except AuthBusy:
+            return _err(429, "rate_limited", "too many sign-in checks, try again shortly")
         if tenant is None:
             return _err(401, "unauthorized", "bad workspace token")
+        if _over(api_hits, "ws:" + tenant.workspace, API_RATE_LIMIT, bridge.clock()):
+            return _err(429, "rate_limited", "too many requests, slow down")
         if tenant.disabled:
             return _err(403, "disabled", "this workspace is turned off on the bridge")
         return tenant
@@ -774,14 +779,6 @@ def _client_ip(request: Request, trust_proxy: bool) -> str:
     if trust_proxy:
         key = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip() or key
     return key
-
-
-def _claimed_workspace(request: Request) -> str:
-    """The workspace a request says it is, before any check: only a rate-limit key."""
-    token = (request.headers.get("authorization") or "")[7:].strip()
-    if token.startswith("ts_usg_"):
-        return "u:" + (request.headers.get("x-teamshift-workspace") or "")[:64]
-    return "s:" + token.rpartition(".")[0][:64]
 
 
 class _StripPrefix:
