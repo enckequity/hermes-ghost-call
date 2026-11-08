@@ -31,6 +31,8 @@ USAGE_NAME_RE = re.compile(r"^t-[0-9a-f]{10}$")
 WORKSPACE_HEADER = "x-teamshift-workspace"
 USAGE_PATH = "/api/workspace/usage"
 CACHE_S = 600.0
+DENY_CACHE_S = 60.0  # a 401 is remembered this long, so a flood of guesses stays local
+MAX_CHECKS = 8  # concurrent auth-service calls; the rest wait their turn
 CACHE_MAX = 4096
 _SIG_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")  # 32 bytes, base64url, unpadded
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -85,6 +87,8 @@ class Authenticator:
         self.settings = settings
         self.clock = clock
         self._cache: dict[str, tuple[str, float]] = {}  # sha256(name+token) -> (name, expiry)
+        self._denied: dict[str, tuple[str, float]] = {}  # same key, 401 answers only
+        self._checks = asyncio.Semaphore(MAX_CHECKS)
         url = settings.auth_url
         parts = urllib.parse.urlsplit(url)
         ok = parts.scheme == "https" or (parts.scheme == "http" and parts.hostname in _LOCAL_HOSTS)
@@ -113,13 +117,25 @@ class Authenticator:
         hit = self._cache.get(key)
         if hit and hit[1] > now:
             return hit[0]
-        status = await asyncio.to_thread(_usage_status, self.usage_url, token, name,
-                                         self.settings.auth_timeout_s)
+        denied = self._denied.get(key)
+        if denied and denied[1] > now:
+            return None
+        async with self._checks:
+            status = await asyncio.to_thread(_usage_status, self.usage_url, token, name,
+                                             self.settings.auth_timeout_s)
+        if status == 401:
+            _remember(self._denied, key, name, now + DENY_CACHE_S, now)
         if status != 200:
             return None
-        if len(self._cache) >= CACHE_MAX:
-            self._cache = {k: v for k, v in self._cache.items() if v[1] > now}
-            if len(self._cache) >= CACHE_MAX:
-                self._cache.pop(next(iter(self._cache)))
-        self._cache[key] = (name, now + CACHE_S)
+        _remember(self._cache, key, name, now + CACHE_S, now)
         return name
+
+
+def _remember(cache: dict[str, tuple[str, float]], key: str, name: str, until: float,
+              now: float) -> None:
+    if len(cache) >= CACHE_MAX:
+        for k in [k for k, v in cache.items() if v[1] <= now]:
+            cache.pop(k)
+        if len(cache) >= CACHE_MAX:
+            cache.pop(next(iter(cache)))
+    cache[key] = (name, until)

@@ -74,7 +74,10 @@ kept on the bridge.
    unreachable service means refused. Only successes are cached, for 10 minutes, keyed by
    sha256(name + token), so a revoked token can keep working for up to 10 minutes.
 
-Anything malformed or unverified gets `401`. A workspace with `"disabled": true` in the
+Anything malformed or unverified gets `401`. A `401` from the auth service is remembered for
+60 s, and at most 8 auth checks run at once. Every `/v1` request is rate-limited first, to 60
+a minute per client IP and per claimed workspace (`429 rate_limited`), so a flood of guessed
+tokens never reaches the auth service. A workspace with `"disabled": true` in the
 overrides gets `403 disabled`. Overrides apply to both paths by workspace name. Sessions are
 keyed by `(workspace, session id)`, so two workspaces may use the same id, and an id that
 belongs to another workspace answers `404`, exactly as if it did not exist.
@@ -101,7 +104,8 @@ Errors: `{"error": {"code": "...", "message": "short, no secrets, no vendor name
   "expires_in": 600}`. Room mode has only `you`; phone mode has no links (the bridge rings).
 - The bridge clamps `config` with the plugin's own rules, keeps the 2.5 s hint timeout, turns
   `store_transcripts` off (the transcript lives in memory for the summary only) and takes the
-  hint model from `hint.model`, else the workspace override's `hint_model`. The hint base URL
+  hint model from `hint.model`, else the workspace override's `hint_model`, else
+  `openai/gpt-4.1-mini` (the plugin's own `model` setting is ignored here). The hint base URL
   comes only from the override (default `https://openrouter.ai/api/v1`).
 - `hint.api_key` is kept in the bridge's memory for this session and never written to disk. It
   is dropped when the session ends. A restarted bridge has no key, so a session in flight then
@@ -130,7 +134,8 @@ spoken by text to speech (whispers and the phone disclosure).
 
 ### `PUT /v1/sessions/{session_id}/commands/{command_id}`
 `{"kind": "speak", "n": 3}` whispers hint 3 (or the latest when `n` is null) to the user only.
-A repeated `command_id` is a no-op. `409` when the session is not live. Any other `kind` is
+A repeated `command_id` is a no-op (the last 256 per session are remembered). `409` when the
+session is not live, `429 too_fast` for more than one whisper every 2 s. Any other `kind` is
 `422`: Intervene (Ghost speaking to the other party) does not exist on the shared bridge, and the
 plugin refuses it too.
 
@@ -153,7 +158,7 @@ Body `{}`. Idempotent; the summary then arrives through `updates`.
 1. Ring the customer (`POST /calls`, caller ID `GHOST_CALL_CALLER_NUMBER`).
 2. On `call.answered` for the customer, ring the other party.
 3. On `call.answered` for the other party, `speak` the disclosure on that leg.
-4. On `call.speak.ended` of the disclosure, `bridge` the legs, then `streaming_start` on each
+4. On `call.speak.ended` of the disclosure with `status: "completed"` (anything else ends the call unbridged), `bridge` the legs, then `streaming_start` on each
    leg with `stream_track: inbound_track` and a one-time media token in the URL.
 5. Whispers: `speak` on the customer's leg with `target_legs: self`. The live two-phone check in
    enckequity/teamshift#1090 slice 3 must confirm the other party hears nothing.

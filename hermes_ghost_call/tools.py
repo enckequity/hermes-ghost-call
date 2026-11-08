@@ -389,11 +389,11 @@ SCHEMAS: dict[str, dict] = {
     "ghost_start": {
         "name": "ghost_start",
         "description": (
-            "Start a Ghost Call: Hermes silently listens to the user's own phone call and pushes "
-            "one-line hints to the user only. Hermes never joins the call as a voice and never "
-            "calls anyone as an AI persona. Returns two one-time join links in web mode (give "
-            "'you' to the user, 'them' goes to the other party) or, in Twilio mode, rings the "
-            "user's phone first. Room mode (speakerphone) returns one link: the user opens it "
+            "Start a Ghost Call: the assistant silently listens to the user's own phone call and "
+            "pushes one-line hints to the user only. It never joins the call as a voice and "
+            "never calls anyone as an AI persona. Returns two one-time join links in web mode "
+            "(give 'you' to the user, 'them' goes to the other party) or, in phone mode, rings "
+            "the user's phone first. Room mode (speakerphone) returns one link: the user opens it "
             "on a laptop next to a phone call on speaker (any call app), and Ghost listens "
             "through that one microphone. After starting, stay quiet: hints are pushed "
             "automatically; do not ask the user questions during the call."),
@@ -402,10 +402,10 @@ SCHEMAS: dict[str, dict] = {
                      "with facts, e.g. 'book a table Friday 8pm for 4, budget $80, name Winch'."},
             "callee_label": {"type": "string", "description": "Who is on the other side, "
                              "e.g. 'Bella Napoli'."},
-            "mode": {"type": "string", "enum": ["web", "twilio", "room"], "description":
-                     "web (default unless Twilio is fully configured), twilio, or room "
-                     "(speakerphone: one page listens to a call on speaker)."},
-            "callee_number": {"type": "string", "description": "Twilio mode only: E.164."}},
+            "mode": {"type": "string", "enum": ["web", "phone", "room"], "description":
+                     "web (default unless phone calling is set up), phone (rings both sides), "
+                     "or room (speakerphone: one page listens to a call on speaker)."},
+            "callee_number": {"type": "string", "description": "Phone mode only: E.164."}},
             "required": ["goal"]}},
     "ghost_status": {
         "name": "ghost_status",

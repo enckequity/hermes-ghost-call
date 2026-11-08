@@ -31,7 +31,7 @@ from ..session import ACTIVE_STATES, CREATED, ENDED, LIVE, ROLES, Store, elapsed
 from . import telnyx_io, twilio_io, webpage
 from .auth import Authenticator
 from .live import GhostRuntime
-from .settings import DEFAULT_HINT_BASE_URL, BridgeSettings, Tenant
+from .settings import DEFAULT_HINT_BASE_URL, DEFAULT_HINT_MODEL, BridgeSettings, Tenant
 from .stt import SttConnect, make_openai_connect
 
 log = logging.getLogger(__name__)
@@ -46,6 +46,9 @@ PAGE_MODES = ("web", "room")  # modes served by browser pages (room: the You pag
 SHARED_MODES = (*PAGE_MODES, "phone")  # what a workspace may start on the shared bridge
 MAX_API_BODY = 16384
 DAY_S = 86400.0
+API_RATE_LIMIT = 60  # /v1 requests per minute, per client IP and per claimed workspace
+SPEAK_GAP_S = 2.0
+SEEN_MAX = 256
 _REF = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
@@ -85,7 +88,8 @@ class Bridge:
         self.created: dict[str, dict] = {}
         # shortcut: lost on restart, so a speak retried across a restart may play twice;
         # persist in the commands table if that matters.
-        self.seen_commands: set[tuple[str, str]] = set()
+        self.seen_commands: dict[str, dict[str, None]] = {}  # sid -> ordered cmd ids, last 256
+        self.last_speak: dict[str, float] = {}
 
     def runtime(self, sid: str) -> GhostRuntime | None:
         rt = self.runtimes.get(sid)
@@ -109,6 +113,8 @@ class Bridge:
     def forget(self, sid: str) -> None:
         self.hint_keys.pop(sid, None)
         self.created.pop(sid, None)
+        self.seen_commands.pop(sid, None)
+        self.last_speak.pop(sid, None)
 
     async def settle_unattached(self, session: dict, reason: str) -> None:
         """End a session no runtime owns, and write its (transcript-free) summary once."""
@@ -259,6 +265,10 @@ class Bridge:
                 self.store.set_usage(sid, {**usage, "tts_chars": int(usage.get("tts_chars") or 0)
                                            + len(telnyx_io.DISCLOSURE)})
             elif kind == "call.speak.ended" and leg == "them" and \
+                    state.get("kind") == "disclosure" and payload.get("status") != "completed":
+                # The notice was cut off or failed: nobody heard it, so never bridge.
+                await self.settle_unattached(session, "disclosure_failed")
+            elif kind == "call.speak.ended" and leg == "them" and \
                     state.get("kind") == "disclosure" and self.store.mark_consent(sid):
                 # Only now does any audio leave the call: bridge the legs, then fork each one.
                 await self.telnyx.bridge(provider["you_ccid"], ccid)
@@ -327,20 +337,8 @@ def create_app(settings: BridgeSettings, *, store: Store | None = None,
     hits: dict[str, deque[float]] = {}
 
     def limited(request: Request) -> bool:
-        key = request.client.host if request.client else "?"
-        if settings.trust_proxy:
-            fwd = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-            key = fwd or key
-        now = the_clock()
-        q = hits.setdefault(key, deque())
-        while q and now - q[0] > RATE_WINDOW_S:
-            q.popleft()
-        if len(q) >= RATE_LIMIT:
-            return True
-        q.append(now)
-        if len(hits) > 1024:
-            for k in [k for k, v in hits.items() if not v or now - v[-1] > RATE_WINDOW_S]:
-                hits.pop(k, None)
+        key = _client_ip(request, settings.trust_proxy)
+        return _over(hits, key, RATE_LIMIT, the_clock())
         return False
 
     def invalid(status: int = 404) -> Response:
@@ -555,7 +553,14 @@ def _add_shared_routes(app: FastAPI, bridge: Bridge) -> None:
 
     authn = Authenticator(settings, clock=bridge.clock)
 
+    api_hits: dict[str, deque[float]] = {}
+
     async def caller(request: Request) -> Tenant | JSONResponse:
+        now = bridge.clock()  # both limits run before any auth-service call
+        if _over(api_hits, "ip:" + _client_ip(request, settings.trust_proxy), API_RATE_LIMIT,
+                 now) or _over(api_hits, "ws:" + _claimed_workspace(request), API_RATE_LIMIT,
+                               now):
+            return _err(429, "rate_limited", "too many requests, slow down")
         tenant = await authn.resolve(request.headers)
         if tenant is None:
             return _err(401, "unauthorized", "bad workspace token")
@@ -616,7 +621,8 @@ def _add_shared_routes(app: FastAPI, bridge: Bridge) -> None:
         cfg = configmod.resolve(lambda key, _default: raw_cfg.get(key))  # clamped here too
         hint = body.get("hint") if isinstance(body.get("hint"), dict) else {}
         cfg.update(store_transcripts=False,  # transcripts stay in memory for the summary only
-                   model=str(hint.get("model") or tenant.hint_model or cfg["model"])[:120],
+                   # never cfg["model"]: an unprefixed id fails on the hint gateway
+                   model=str(hint.get("model") or tenant.hint_model or DEFAULT_HINT_MODEL)[:120],
                    hint_base_url=tenant.hint_base_url or DEFAULT_HINT_BASE_URL)
         provider: dict[str, str] = {}
         if mode == "phone":
@@ -673,12 +679,19 @@ def _add_shared_routes(app: FastAPI, bridge: Bridge) -> None:
         body = await body_of(request) or {}
         if body.get("kind") != "speak":  # intervene does not exist on the shared bridge
             return _err(422, "bad_command", "only speak is accepted")
-        if (session["id"], cmd_id) in bridge.seen_commands:
+        seen = bridge.seen_commands.setdefault(session["id"], {})
+        if cmd_id in seen:
             return JSONResponse({"ok": True, "repeat": True})
         if session["state"] != LIVE:
             return _err(409, "not_live", "the session is not live")
+        now = bridge.clock()
+        if now - bridge.last_speak.get(session["id"], -SPEAK_GAP_S) < SPEAK_GAP_S:
+            return _err(429, "too_fast", "one whisper every 2 seconds")
+        bridge.last_speak[session["id"]] = now
         n = body.get("n")
-        bridge.seen_commands.add((session["id"], cmd_id))
+        seen[cmd_id] = None
+        if len(seen) > SEEN_MAX:
+            seen.pop(next(iter(seen)))
         store.enqueue(session["id"], "speak", {"n": n if isinstance(n, int) else None})
         return JSONResponse({"ok": True})
 
@@ -742,6 +755,35 @@ def _add_shared_routes(app: FastAPI, bridge: Bridge) -> None:
 
 
 # ---- helpers ------------------------------------------------------------------------------
+def _over(hits: dict[str, deque[float]], key: str, limit: int, now: float) -> bool:
+    """Sliding-window limit: True when ``key`` already had ``limit`` hits in the window."""
+    q = hits.setdefault(key, deque())
+    while q and now - q[0] > RATE_WINDOW_S:
+        q.popleft()
+    if len(q) >= limit:
+        return True
+    q.append(now)
+    if len(hits) > 1024:
+        for k in [k for k, v in hits.items() if not v or now - v[-1] > RATE_WINDOW_S]:
+            hits.pop(k, None)
+    return False
+
+
+def _client_ip(request: Request, trust_proxy: bool) -> str:
+    key = request.client.host if request.client else "?"
+    if trust_proxy:
+        key = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip() or key
+    return key
+
+
+def _claimed_workspace(request: Request) -> str:
+    """The workspace a request says it is, before any check: only a rate-limit key."""
+    token = (request.headers.get("authorization") or "")[7:].strip()
+    if token.startswith("ts_usg_"):
+        return "u:" + (request.headers.get("x-teamshift-workspace") or "")[:64]
+    return "s:" + token.rpartition(".")[0][:64]
+
+
 class _StripPrefix:
     """Serve the same routes with or without the proxy's path prefix (``/bridge/ghost``), so it
     works whether the proxy strips the prefix or passes it through."""

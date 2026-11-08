@@ -173,13 +173,20 @@ class FakeAuth:
         import threading
 
         self.status, self.delay, self.hits = 200, 0.0, []
+        self.active = self.peak = 0
+        lock = threading.Lock()
         fake = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):  # noqa: N802
                 fake.hits.append((self.path, self.headers.get("authorization"),
                                   self.headers.get("x-teamshift-workspace")))
+                with lock:
+                    fake.active += 1
+                    fake.peak = max(fake.peak, fake.active)
                 time.sleep(fake.delay)
+                with lock:
+                    fake.active -= 1
                 ok = (self.headers.get("authorization") == f"Bearer {USAGE_TOKEN}"
                       and self.headers.get("x-teamshift-workspace") == USAGE_NAME)
                 code = fake.status if ok or fake.status != 200 else 401
@@ -233,15 +240,23 @@ def test_usage_token_valid_and_cached(settings, store, phone, fake_auth, clock):
         assert len(fake_auth.hits) == 2
 
 
-def test_usage_token_refusals_fail_closed_and_are_not_cached(settings, store, phone, fake_auth):
-    app = usage_app(settings, store, phone, fake_auth)
+def test_usage_token_refusals_fail_closed_and_only_401_is_cached(settings, store, phone,
+                                                                 fake_auth, clock):
+    app = usage_app(settings, store, phone, fake_auth, clock)
     with TestClient(app) as c:
         fake_auth.status = 401
         assert c.get("/v1/health", headers=usage_hdr()).status_code == 401
         assert c.get("/v1/health", headers=usage_hdr()).status_code == 401
-        assert len(fake_auth.hits) == 2  # a refusal is never cached
+        assert len(fake_auth.hits) == 1  # the 401 is remembered for 60 s
+        fake_auth.status = 200
+        assert c.get("/v1/health", headers=usage_hdr()).status_code == 401
+        clock.advance(61)
+        assert c.get("/v1/health", headers=usage_hdr()).status_code == 200
+        assert len(fake_auth.hits) == 2
+        clock.advance(601)
         fake_auth.status = 503
         assert c.get("/v1/health", headers=usage_hdr()).status_code == 401
+        assert c.get("/v1/health", headers=usage_hdr()).status_code == 401  # 5xx: not cached
         fake_auth.status, fake_auth.delay = 200, 1.0  # slower than the 0.5 s timeout
         assert c.get("/v1/health", headers=usage_hdr()).status_code == 401
         fake_auth.delay = 0.0
@@ -255,6 +270,38 @@ def test_usage_token_refusals_fail_closed_and_are_not_cached(settings, store, ph
         assert len(fake_auth.hits) == n  # bad shapes never reach the auth service
         assert c.get("/v1/health", headers=usage_hdr(token="ts_usg_" + "cd" * 32)
                      ).status_code == 401  # well formed, wrong token
+
+
+async def test_auth_checks_are_capped_at_eight_at_a_time(settings, fake_auth):
+    settings.auth_url, settings.auth_timeout_s = fake_auth.url, 5.0
+    fake_auth.delay = 0.2
+    authn = authmod.Authenticator(settings)
+    heads = [{k.lower(): v for k, v in usage_hdr(token="ts_usg_" + f"{i:064x}").items()}
+             for i in range(20)]  # starlette headers are lower-cased
+    out = await asyncio.gather(*(authn.resolve(h) for h in heads))
+    assert out == [None] * 20 and len(fake_auth.hits) == 20
+    assert fake_auth.peak == authmod.MAX_CHECKS  # concurrent, but never more than the cap
+
+
+def test_v1_is_rate_limited_per_ip_and_per_workspace_before_auth(settings, store, phone,
+                                                                  fake_auth):
+    settings.trust_proxy = True
+    app = usage_app(settings, store, phone, fake_auth)
+    with TestClient(app) as c:
+        for i in range(60):  # one IP, a different made-up workspace each time
+            h = {**usage_hdr(token="ts_usg_" + f"{i:064x}"), "X-Forwarded-For": "1.1.1.1"}
+            assert c.get("/v1/health", headers=h).status_code == 401
+        n = len(fake_auth.hits)
+        h = {**usage_hdr(token="ts_usg_" + "f" * 64), "X-Forwarded-For": "1.1.1.1"}
+        assert c.get("/v1/health", headers=h).status_code == 429
+        assert len(fake_auth.hits) == n  # limited before the auth service is asked
+        for i in range(60):  # one workspace, spread over many IPs
+            h = {**auth(TOKEN_B), "X-Forwarded-For": f"2.2.{i}.1"}
+            assert c.get("/v1/health", headers=h).status_code == 200
+        assert c.get("/v1/health", headers={**auth(TOKEN_B), "X-Forwarded-For": "3.3.3.3"}
+                     ).status_code == 429
+        assert c.get("/v1/health", headers={**auth(), "X-Forwarded-For": "3.3.3.3"}
+                     ).status_code == 200  # other workspaces are unaffected
 
 
 def test_usage_path_is_off_without_an_auth_url(app):
@@ -361,6 +408,20 @@ def test_bridge_enforces_one_session_daily_cap_modes_and_numbers(app, store, clo
         assert create(c, ref="c9", token=TOKEN_B).status_code == 201  # caps are per workspace
 
 
+def test_workspace_sessions_never_use_the_upstream_model_id(app, store):
+    with TestClient(app) as c:
+        assert create(c, token=TOKEN_B, config={"model": "gpt-4.1-mini"}).status_code == 201
+        assert store.tenant_session("ws-b", "loc1")["config"]["model"] == "openai/gpt-4.1-mini"
+        assert create(c, ref="m2", token=TOKEN_A).status_code == 201  # override wins
+        assert store.tenant_session("ws-a", "m2")["config"]["model"] == "model-a"
+
+
+def test_bridge_binds_loopback_unless_a_host_is_given():
+    assert BridgeSettings.from_env({"PORT": "8791"}).host == "127.0.0.1"
+    assert BridgeSettings.from_env({"PORT": "8791"}).port == 8791
+    assert BridgeSettings.from_env({"HERMES_GHOST_BRIDGE_HOST": "0.0.0.0"}).host == "0.0.0.0"
+
+
 # ---- isolation ----------------------------------------------------------------------------------
 def test_workspace_b_cannot_read_or_touch_workspace_a(app, store):
     with TestClient(app) as c:
@@ -385,7 +446,7 @@ def test_workspace_b_cannot_read_or_touch_workspace_a(app, store):
 
 
 # ---- updates, commands, usage -------------------------------------------------------------------
-def test_updates_cursor_commands_and_usage(app, store):
+def test_updates_cursor_commands_and_usage(app, store, clock):
     with TestClient(app) as c:
         create(c)
         sid = store.tenant_session("ws-a", "loc1")["id"]
@@ -403,8 +464,21 @@ def test_updates_cursor_commands_and_usage(app, store):
                      headers=auth()).status_code == 422
         assert c.put(cmd, json={"kind": "speak", "n": 2}, headers=auth()).json() == {"ok": True}
         assert c.put(cmd, json={"kind": "speak", "n": 2}, headers=auth()).json()["repeat"]
+        assert c.put("/v1/sessions/loc1/commands/c8", json={"kind": "speak"},
+                     headers=auth()).json()["error"]["code"] == "too_fast"  # 1 per 2 s
+        clock.advance(2)
+        assert c.put("/v1/sessions/loc1/commands/c8", json={"kind": "speak"},
+                     headers=auth()).json() == {"ok": True}
         taken = store.take_commands(sid)
-        assert [(t["kind"], t["payload"]) for t in taken] == [("speak", {"n": 2})]
+        assert [(t["kind"], t["payload"]) for t in taken] == [("speak", {"n": 2}),
+                                                               ("speak", {"n": None})]
+        bridge = app.state.bridge
+        for i in range(300):
+            clock.advance(2)
+            c.put(f"/v1/sessions/loc1/commands/x{i}", json={"kind": "speak"}, headers=auth())
+        assert len(bridge.seen_commands[sid]) == 256 and "c7" not in bridge.seen_commands[sid]
+        bridge.forget(sid)
+        assert sid not in bridge.seen_commands and sid not in bridge.last_speak
         assert c.post("/v1/sessions/loc1/hangup", headers=auth()).status_code == 200
         assert store.get_session(sid)["hangup_requested"]
 
@@ -462,9 +536,10 @@ def test_user_pages_show_the_consent_line_and_a_confirm_button():
 
 
 # ---- phone mode on Telnyx -----------------------------------------------------------------------
-def event(kind: str, sid: str, leg: str, ccid: str, extra: str = "") -> dict:
+def event(kind: str, sid: str, leg: str, ccid: str, extra: str = "", **payload) -> dict:
     return {"data": {"event_type": kind, "payload": {
-        "call_control_id": ccid, "client_state": telnyx_io.client_state(sid, leg, extra)}}}
+        "call_control_id": ccid, "client_state": telnyx_io.client_state(sid, leg, extra),
+        **payload}}}
 
 
 def post_event(c, body: dict, **kw):
@@ -487,6 +562,20 @@ def test_webhooks_fail_closed_on_a_bad_stale_or_missing_signature(app, settings,
         assert post_event(c, body).status_code == 403
 
 
+def test_a_disclosure_that_did_not_finish_ends_the_call_unbridged(app, store, phone):
+    with TestClient(app) as c:
+        create(c, mode="phone", numbers={"you": "+12125550123", "them": "+13105550199"})
+        sid = store.tenant_session("ws-a", "loc1")["id"]
+        post_event(c, event("call.answered", sid, "you", "cc-you"))
+        post_event(c, event("call.answered", sid, "them", "cc-them"))
+        post_event(c, event("call.speak.ended", sid, "them", "cc-them", "disclosure",
+                            status="interrupted"))
+        assert "bridge" not in phone.kinds() and "stream" not in phone.kinds()
+        s = store.get_session(sid)
+        assert s["state"] == ENDED and s["consent_at"] is None
+        assert ("hangup", "cc-them") in phone.calls
+
+
 def test_phone_flow_discloses_before_any_audio_reaches_transcription(app, store, phone):
     with TestClient(app) as c:
         r = create(c, mode="phone", numbers={"you": "+12125550123", "them": "+13105550199"})
@@ -505,7 +594,8 @@ def test_phone_flow_discloses_before_any_audio_reaches_transcription(app, store,
                 pytest.raises(WebSocketDisconnect):
             ws.receive_text()  # no audio is accepted before the disclosure has played
         post_event(c, event("call.answered", sid, "you", "cc-forged"))  # unknown leg id
-        post_event(c, event("call.speak.ended", sid, "them", "cc-them", "disclosure"))
+        post_event(c, event("call.speak.ended", sid, "them", "cc-them", "disclosure",
+                            status="completed"))
         i_speak = phone.kinds().index("speak")
         assert phone.kinds()[i_speak + 1:] == ["bridge", "stream", "stream"]
         assert store.get_session(sid)["consent_at"] is not None
@@ -584,6 +674,25 @@ def test_no_vendor_names_on_anything_the_user_or_the_model_reads():
              ticker_text({"callee_label": "x"}, ["00:01 · ask about fees"], state=LIVE),
              (Path(__file__).resolve().parent.parent / "skills" / "ghost-call" /
               "SKILL.md").read_text()]
+    import yaml
+
+    def strings(node):
+        if isinstance(node, dict):
+            for v in node.values():
+                yield from strings(v)
+        elif isinstance(node, list):
+            for v in node:
+                yield from strings(v)
+        elif isinstance(node, str):
+            yield node
+
+    texts += list(strings(tools.SCHEMAS))  # every description and enum the model sees
+    manifest = yaml.safe_load((Path(__file__).resolve().parent.parent / "plugin.yaml")
+                              .read_text())
+    texts.append(manifest["description"])
+    for section in ("requires_env", "optional_env"):
+        texts += [e.get("description", "") for e in manifest.get(section) or []]
+    texts += [c.get("description", "") for c in (manifest.get("config_schema") or {}).values()]
     src = (Path(live.__file__).read_text())
     texts += re.findall(r'"text":\s*"([^"]+)"', src)  # every notice sent to the user's page
     for text in texts:

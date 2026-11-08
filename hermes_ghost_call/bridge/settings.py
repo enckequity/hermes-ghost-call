@@ -17,6 +17,7 @@ PUBLIC_URL_ENV = "GHOST_CALL_BRIDGE_PUBLIC_URL"  # PUBLIC_BASE_URL is the older 
 OVERRIDES_ENV = "GHOST_CALL_BRIDGE_OVERRIDES"
 CREDENTIALS_ENV = "CREDENTIALS_DIRECTORY"  # systemd LoadCredential= style: one file per secret
 DEFAULT_HINT_BASE_URL = "https://openrouter.ai/api/v1"  # any OpenAI-compatible chat API
+DEFAULT_HINT_MODEL = "openai/gpt-4.1-mini"  # gateway id; a workspace override can change it
 WORKSPACE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
 
@@ -100,7 +101,6 @@ class BridgeSettings:
         def secret(name: str) -> str:
             return credential(name, environ)
 
-        bind_all = bool(env.get("PORT")) and not env.get("HERMES_GHOST_BRIDGE_HOST")
         raw_port = env.get("HERMES_GHOST_BRIDGE_PORT") or env.get("PORT") or str(DEFAULT_PORT)
         try:
             port = int(raw_port)
@@ -114,7 +114,7 @@ class BridgeSettings:
             twilio_auth_token=secret("TWILIO_AUTH_TOKEN"),
             twilio_from_number=secret("TWILIO_FROM_NUMBER"),
             db_path=env.get("HERMES_GHOST_DB") or "",
-            host=env.get("HERMES_GHOST_BRIDGE_HOST") or ("0.0.0.0" if bind_all else DEFAULT_HOST),  # noqa: S104
+            host=env.get("HERMES_GHOST_BRIDGE_HOST") or DEFAULT_HOST,  # PORT alone: loopback
             port=port,
             trust_proxy=(env.get("HERMES_GHOST_TRUST_PROXY") or "").strip() == "1",
             signing_key=secret("GHOST_CALL_BRIDGE_SIGNING_KEY"),
