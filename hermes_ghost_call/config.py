@@ -22,6 +22,7 @@ DEFAULTS: dict[str, Any] = {
     "user_name": "",
     "user_number": "",
     "hint_timeout_ms": 2500,
+    "hint_model": "",  # shared bridge only: hint/summary model id ('' = the bridge's default)
 }
 MAX_DURATION_HARD_S = 3600
 MIN_DURATION_S = 60
@@ -70,4 +71,5 @@ def resolve(get: Callable[[str, Any], Any] | None) -> dict[str, Any]:
         "user_name": str(raw("user_name") or "").strip()[:60],
         "user_number": str(raw("user_number") or "").strip(),
         "hint_timeout_ms": int(max(300, min(5000, _num(raw("hint_timeout_ms"), 2500)))),
+        "hint_model": str(raw("hint_model") or "").strip()[:120],
     }

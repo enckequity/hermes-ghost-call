@@ -66,7 +66,7 @@ def _start(rest: list[str], kw: dict) -> str:
     if not out.get("ok"):
         return f"\U0001F47B {out.get('error')}"
     lines = [f"\U0001F47B Ghost {out['session_id']} is ready ({out['mode']} mode, "
-             f"hints: {out['hint_mode']}). Hermes never joins the call."]
+             f"hints: {out['hint_mode']}). Ghost never joins the call."]
     links = out.get("links") or {}
     if "them" in links:
         lines.append(f"You (open with headphones): {links['you']}")
@@ -108,6 +108,8 @@ def _intervene(rest: list[str], kw: dict) -> str:
         return "\U0001F47B no ghost session."
     allow = rest[0].lower() == "allow"
     if allow:
+        if (session.get("provider") or {}).get("remote") or session.get("mode") == "phone":
+            return "\U0001F47B Intervene is disabled on the shared call service."
         if safety.is_unattended(svc.ctx, kw):
             return "\U0001F47B Intervene cannot be allowed in an unattended run."
         if session["state"] not in (LIVE, "created"):

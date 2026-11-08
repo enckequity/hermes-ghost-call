@@ -49,7 +49,11 @@ CREATE TABLE IF NOT EXISTS sessions (
   hangup_requested REAL,
   summary TEXT,
   summary_posted INTEGER NOT NULL DEFAULT 0,
-  provider TEXT NOT NULL DEFAULT '{}'
+  provider TEXT NOT NULL DEFAULT '{}',
+  workspace TEXT NOT NULL DEFAULT '',
+  client_ref TEXT NOT NULL DEFAULT '',
+  consent_at REAL,
+  usage TEXT NOT NULL DEFAULT '{}'
 );
 CREATE TABLE IF NOT EXISTS tokens (
   session_id TEXT NOT NULL,
@@ -103,6 +107,13 @@ CREATE INDEX IF NOT EXISTS commands_open ON commands (session_id, taken_at);
 """
 
 COMMAND_KINDS = ("speak", "intervene", "hangup")
+# Columns added after the first release; older ghost.db files get them on open.
+_ADDED_COLUMNS = {
+    "workspace": "TEXT NOT NULL DEFAULT ''",  # shared bridge tenant; '' for a co-located bridge
+    "client_ref": "TEXT NOT NULL DEFAULT ''",  # the plugin's own session id (shared bridge)
+    "consent_at": "REAL",  # transcription consent: page confirm or the spoken phone disclosure
+    "usage": "TEXT NOT NULL DEFAULT '{}'",  # {"stt_seconds", "tts_chars"}
+}
 
 
 def default_db_path() -> Path:
@@ -143,7 +154,14 @@ class Store:
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA busy_timeout=5000")
+        have = {r[1] for r in self._db.execute("PRAGMA table_info(sessions)").fetchall()}
+        if have:
+            for name, decl in _ADDED_COLUMNS.items():
+                if name not in have:
+                    self._db.execute(f"ALTER TABLE sessions ADD COLUMN {name} {decl}")
         self._db.executescript(SCHEMA)
+        self._db.execute("CREATE INDEX IF NOT EXISTS sessions_by_ref ON sessions"
+                         " (workspace, client_ref)")
 
     def close(self) -> None:
         with self._lock:
@@ -167,6 +185,7 @@ class Store:
             return None
         row["config"] = json.loads(row.get("config") or "{}")
         row["provider"] = json.loads(row.get("provider") or "{}")
+        row["usage"] = json.loads(row.get("usage") or "{}")
         row["summary"] = json.loads(row["summary"]) if row.get("summary") else None
         row["intervene_allowed"] = bool(row.get("intervene_allowed"))
         row["disclosed"] = bool(row.get("disclosed"))
@@ -175,22 +194,35 @@ class Store:
     # -- sessions --
     def create_session(self, *, goal: str, callee_label: str, mode: str, config: dict,
                        origin_session: str = "", provider: dict | None = None,
-                       session_id: str | None = None) -> dict:
+                       session_id: str | None = None, workspace: str = "",
+                       client_ref: str = "") -> dict:
         sid = session_id or new_session_id()
         self._exec(
             "INSERT INTO sessions (id, goal, callee_label, mode, state, origin_session, config,"
-            " created_at, provider) VALUES (?,?,?,?,?,?,?,?,?)",
+            " created_at, provider, workspace, client_ref) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (sid, goal, callee_label, mode, CREATED, origin_session,
-             json.dumps(config, sort_keys=True), self.clock(), json.dumps(provider or {})))
+             json.dumps(config, sort_keys=True), self.clock(), json.dumps(provider or {}),
+             workspace, client_ref))
         self.add_event(sid, "created", {"mode": mode})
         return self.get_session(sid) or {}
 
     def get_session(self, sid: str) -> dict | None:
         return self._session_row(self._one("SELECT * FROM sessions WHERE id=?", (sid,)))
 
-    def active_sessions(self) -> list[dict]:
-        rows = self._all("SELECT * FROM sessions WHERE state IN (?,?) ORDER BY created_at",
-                         ACTIVE_STATES)
+    def tenant_session(self, workspace: str, client_ref: str) -> dict | None:
+        """A shared-bridge session, only ever looked up inside its own workspace."""
+        if not workspace or not client_ref:
+            return None
+        return self._session_row(self._one(
+            "SELECT * FROM sessions WHERE workspace=? AND client_ref=?", (workspace, client_ref)))
+
+    def active_sessions(self, workspace: str | None = None) -> list[dict]:
+        if workspace is None:
+            rows = self._all("SELECT * FROM sessions WHERE state IN (?,?) ORDER BY created_at",
+                             ACTIVE_STATES)
+        else:
+            rows = self._all("SELECT * FROM sessions WHERE state IN (?,?) AND workspace=?"
+                             " ORDER BY created_at", (*ACTIVE_STATES, workspace))
         return [r for r in (self._session_row(x) for x in rows) if r]
 
     def latest_session(self) -> dict | None:
@@ -202,8 +234,12 @@ class Store:
                          (max(1, min(int(n), 50)),))
         return [r for r in (self._session_row(x) for x in rows) if r]
 
-    def sessions_since(self, since: float) -> int:
-        row = self._one("SELECT COUNT(*) AS n FROM sessions WHERE created_at >= ?", (since,))
+    def sessions_since(self, since: float, workspace: str | None = None) -> int:
+        if workspace is None:
+            row = self._one("SELECT COUNT(*) AS n FROM sessions WHERE created_at >= ?", (since,))
+        else:
+            row = self._one("SELECT COUNT(*) AS n FROM sessions WHERE created_at >= ? AND"
+                            " workspace=?", (since, workspace))
         return int((row or {}).get("n") or 0)
 
     def mark_live(self, sid: str) -> bool:
@@ -239,6 +275,17 @@ class Store:
         """True the first time only: the caller must speak the AI disclosure."""
         cur = self._exec("UPDATE sessions SET disclosed=1 WHERE id=? AND disclosed=0", (sid,))
         return bool(cur.rowcount)
+
+    def mark_consent(self, sid: str) -> bool:
+        """True the first time only. Nothing is transcribed for ``sid`` before this."""
+        cur = self._exec("UPDATE sessions SET consent_at=? WHERE id=? AND consent_at IS NULL",
+                         (self.clock(), sid))
+        if cur.rowcount:
+            self.add_event(sid, "consent", {})
+        return bool(cur.rowcount)
+
+    def set_usage(self, sid: str, usage: dict) -> None:
+        self._exec("UPDATE sessions SET usage=? WHERE id=?", (json.dumps(usage), sid))
 
     def set_provider(self, sid: str, provider: dict) -> None:
         cur = self.get_session(sid)
@@ -307,6 +354,12 @@ class Store:
             self._exec("INSERT INTO hints (session_id, n, t, text, created_at) VALUES"
                        " (?,?,?,?,?)", (sid, n, t, text, self.clock()))
         return self.get_hint(sid, n) or {}
+
+    def put_hint(self, sid: str, n: int, t: float, text: str) -> bool:
+        """Mirror a hint numbered elsewhere (the shared bridge). Idempotent by ``n``."""
+        cur = self._exec("INSERT OR IGNORE INTO hints (session_id, n, t, text, created_at)"
+                         " VALUES (?,?,?,?,?)", (sid, int(n), float(t), text, self.clock()))
+        return bool(cur.rowcount)
 
     def get_hint(self, sid: str, n: int) -> dict | None:
         return self._one("SELECT * FROM hints WHERE session_id=? AND n=?", (sid, int(n)))

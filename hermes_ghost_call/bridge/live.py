@@ -23,7 +23,7 @@ from .. import summary as summarymod
 from ..llm import FAR_LEG_STYLE, WHISPER_STYLE, LLMError, OpenAIClient
 from ..pipeline import HintEngine
 from ..session import ENDED, LIVE, Store, elapsed
-from . import audio, twilio_io
+from . import audio, telnyx_io, twilio_io
 from .settings import BridgeSettings
 from .stt import SttConnect, Transcriber
 from .stt import vocabulary as stt_vocabulary
@@ -40,11 +40,16 @@ class GhostRuntime:
                  client: OpenAIClient | None, stt_connect: SttConnect | None,
                  twilio: twilio_io.TwilioRest | None = None,
                  clock: Callable[[], float] | None = None,
-                 on_finished: Callable[[str], None] | None = None) -> None:
+                 on_finished: Callable[[str], None] | None = None,
+                 hint_client: OpenAIClient | None | bool = True,
+                 telnyx: telnyx_io.TelnyxRest | None = None) -> None:
         self.sid = sid
         self.store = store
         self.settings = settings
-        self.client = client
+        self.client = client  # speech (whisper TTS), held by the bridge
+        # Hints and the summary; a shared-bridge session brings its own (True: same as client).
+        self.hint_client = client if hint_client is True else (hint_client or None)
+        self.telnyx = telnyx
         self.stt_connect = stt_connect
         self.twilio = twilio
         self.clock = clock or store.clock
@@ -52,6 +57,11 @@ class GhostRuntime:
         session = store.get_session(sid) or {}
         self.mode = session.get("mode", "web")
         self.cfg = session.get("config") or {}
+        # Nothing is transcribed before consent: the confirm on the user's page, or the
+        # disclosure finished playing to the other party (phone). Legacy Twilio mode predates it.
+        self.consented = self.mode == "twilio" or session.get("consent_at") is not None
+        self.usage = {"stt_seconds": 0.0, "tts_chars": 0, **(session.get("usage") or {})}
+        self._usage_saved = dict(self.usage)
         self.sockets: dict[str, Send] = {}
         self.transcribers: dict[str, Transcriber] = {}
         self.engine: HintEngine | None = None
@@ -77,7 +87,7 @@ class GhostRuntime:
             self.store.add_event(self.sid, "them_joined", {})
         if self.engine is None and self.session().get("state") == LIVE:
             self.engine = HintEngine(store=self.store, session=self.session(),
-                                     client=self.client, on_hint=self._push_hint,
+                                     client=self.hint_client, on_hint=self._push_hint,
                                      clock=self.clock)
         await self._start_transcriber(role)
         if self._control is None:
@@ -96,7 +106,7 @@ class GhostRuntime:
         if role in self.transcribers or self.stt_connect is None:
             if self.stt_connect is None and role == "you":
                 await self._send("you", {"event": "notice", "text":
-                                         "Transcription is off (no OpenAI key on the bridge)."})
+                                         "Transcription is off on this call service."})
             return
         tr = Transcriber(role, connect=self.stt_connect,
                          model=str(self.cfg.get("stt_model") or "gpt-4o-mini-transcribe"),
@@ -111,9 +121,12 @@ class GhostRuntime:
     async def on_audio(self, role: str, ulaw: bytes) -> None:
         if self._ending or not ulaw:
             return
+        if not self.consented:
+            self.consented = self.session().get("consent_at") is not None
         tr = self.transcribers.get(role)
-        if tr is not None:
+        if tr is not None and self.consented:
             tr.feed(ulaw)
+            self.usage["stt_seconds"] += len(ulaw) / 8000.0  # G.711: 8000 bytes a second
         if self.mode == "web":  # room mode relays nothing: the call itself runs on the phone
             await self._relay(role, ulaw)
 
@@ -127,6 +140,10 @@ class GhostRuntime:
         kind = msg.get("event")
         if kind == "stop":
             await self.end(f"{role}_hung_up")
+        elif role == "you" and kind == "consent" and self.mode in ("web", "room"):
+            self.store.mark_consent(self.sid)
+            self.consented = True
+            await self._send("you", {"event": "consented"})
         elif role == "you" and kind == "speak":
             await self.speak(msg.get("n"))
         elif role == "you" and kind == "hint" and self.engine is not None:
@@ -181,6 +198,8 @@ class GhostRuntime:
             if self.mode == "twilio":
                 ok = await self._announce("you", hint["text"])
                 result = "spoken" if ok else "announce_failed"
+            elif self.mode == "phone":
+                result = await self._phone_whisper(hint["text"])
             else:
                 payload: dict[str, Any] = {"event": "whisper", "n": hint["n"],
                                            "text": hint["text"]}
@@ -190,12 +209,32 @@ class GhostRuntime:
                                                     voice=str(self.cfg.get("voice") or ""),
                                                     style=WHISPER_STYLE, timeout=5.0)
                         payload["pcm24"] = base64.b64encode(pcm).decode("ascii")
+                        self.usage["tts_chars"] += len(hint["text"])
                     except LLMError as exc:
                         payload["fallback"] = exc.code  # the page uses local speech synthesis
                 await self._send("you", payload)
                 result = "spoken"
         self.store.mark_spoken(self.sid, hint["n"])
         return result
+
+    async def _phone_whisper(self, text: str) -> str:
+        ccid = (self.session().get("provider") or {}).get("you_ccid") or ""
+        if self.telnyx is None or not ccid:
+            return "speak_failed"
+        try:
+            await self.telnyx.speak(ccid, text, self_only=True,
+                                    state=telnyx_io.client_state(self.sid, "you", "whisper"))
+        except Exception:  # noqa: BLE001
+            log.warning("ghost phone whisper failed")
+            return "speak_failed"
+        self.usage["tts_chars"] += len(text)
+        return "spoken"
+
+    def _save_usage(self) -> None:
+        if self.usage != self._usage_saved:
+            self.usage["stt_seconds"] = round(self.usage["stt_seconds"], 2)
+            self.store.set_usage(self.sid, dict(self.usage))
+            self._usage_saved = dict(self.usage)
 
     # -- intervene (far leg; the one gated path) ---------------------------------------------
     async def intervene(self, text: str, *, unattended: bool = False) -> str:
@@ -221,7 +260,7 @@ class GhostRuntime:
             if "them" not in self.sockets:
                 return "failed: the other party is not connected"
             if self.client is None:
-                return "failed: no TTS (no OpenAI key on the bridge)"
+                return "failed: no speech service on the bridge"
             try:
                 pcm = await self.client.tts(spoken, voice=str(self.cfg.get("voice") or ""),
                                             style=FAR_LEG_STYLE, timeout=8.0)
@@ -283,6 +322,7 @@ class GhostRuntime:
                     return
                 for cmd in self.store.take_commands(self.sid):
                     await self._run_command(cmd)
+                self._save_usage()
                 await asyncio.sleep(self.settings.tick_s)
         except asyncio.CancelledError:
             raise
@@ -316,6 +356,7 @@ class GhostRuntime:
             return
         self._ending = True
         self.store.end_once(self.sid, reason)
+        self._save_usage()
         for role in list(self.sockets):
             await self._send(role, {"event": "ended", "reason": reason})
         for tr in list(self.transcribers.values()):
@@ -329,6 +370,12 @@ class GhostRuntime:
                 if provider.get(key):
                     with contextlib.suppress(Exception):
                         await self.twilio.hangup(provider[key])
+        if self.mode == "phone" and self.telnyx is not None:
+            provider = self.session().get("provider") or {}
+            for key in ("you_ccid", "them_ccid"):
+                if provider.get(key):
+                    with contextlib.suppress(Exception):
+                        await self.telnyx.hangup(provider[key])
         self.ended.set()
         self.summary_task = asyncio.create_task(self._summarise())
         if self._control is not None and self._control is not asyncio.current_task():
@@ -345,7 +392,7 @@ class GhostRuntime:
                      "hint_count": len(hint_rows), "turn_count": len(turns),
                      "end_reason": session.get("end_reason") or ""}
             result = await summarymod.build(
-                self.client, goal=session.get("goal", ""),
+                self.hint_client, goal=session.get("goal", ""),
                 callee_label=session.get("callee_label", ""),
                 user_name=str(self.cfg.get("user_name") or ""), turns=turns,
                 hint_lines=[h["text"] for h in hint_rows],
@@ -356,6 +403,9 @@ class GhostRuntime:
             self.store.set_summary_once(self.sid, {**summarymod.fallback("summary failed"),
                                                    "end_reason": "error"})
         finally:
+            if self.hint_client is not None and self.hint_client is not self.client:
+                with contextlib.suppress(Exception):
+                    await self.hint_client.aclose()
             if self.on_finished is not None:
                 self.on_finished(self.sid)
 

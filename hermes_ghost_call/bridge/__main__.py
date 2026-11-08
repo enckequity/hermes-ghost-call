@@ -17,6 +17,9 @@ def main() -> int:
         # hints run. Names only, never values.
         print("hermes-ghost-call bridge: WARNING missing env: " + ", ".join(missing),
               file=sys.stderr, flush=True)
+    if not settings.tenants:
+        print("hermes-ghost-call bridge: no GHOST_CALL_BRIDGE_TENANTS; the /v1 workspace API "
+              "refuses every token", file=sys.stderr, flush=True)
     print(f"hermes-ghost-call bridge on http://{settings.host}:{settings.port}", flush=True)
     uvicorn.run(create_app(settings), host=settings.host, port=settings.port, log_level="info")
     return 0

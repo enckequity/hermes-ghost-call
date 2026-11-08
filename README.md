@@ -239,6 +239,15 @@ Skill: `ghost-call` (start, relay links, then stay quiet).
 | `HERMES_GHOST_DB` | shared SQLite path (default: Hermes plugin data dir) |
 | `HERMES_GHOST_BRIDGE_HOST` / `_PORT` | bridge bind (default `127.0.0.1:8766`, or `PORT`) |
 
+## Shared bridge (fork)
+
+Set `GHOST_CALL_BRIDGE_URL` and `GHOST_CALL_BRIDGE_TOKEN` and the plugin runs every session on
+one shared, multi-tenant bridge instead of a local one: the bridge serves the pages, places
+phone-mode calls, transcribes and writes hints, and the plugin mirrors hints, state, usage and
+the summary into its local store. Consent is mandatory there (a confirm on the user's page, or a
+spoken notice to the other party in phone mode) and Intervene is off. Contract, env names and the
+phone flow: [docs/BRIDGE_API.md](docs/BRIDGE_API.md). With either variable unset, nothing changes.
+
 ## Safety
 
 - **Secrets** only through `agent.secret_scope.get_secret` (profile-scoped); outside Hermes the

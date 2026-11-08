@@ -10,8 +10,10 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import hashlib
 import json
 import logging
+import re
 import secrets
 from collections import deque
 from collections.abc import Callable
@@ -21,13 +23,14 @@ from typing import Any
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 
+from .. import config as configmod
 from .. import safety
 from .. import summary as summarymod
 from ..llm import OpenAIClient
-from ..session import ACTIVE_STATES, CREATED, ROLES, Store, elapsed
-from . import twilio_io, webpage
+from ..session import ACTIVE_STATES, CREATED, ENDED, LIVE, ROLES, Store, elapsed
+from . import telnyx_io, twilio_io, webpage
 from .live import GhostRuntime
-from .settings import BridgeSettings
+from .settings import DEFAULT_HINT_BASE_URL, BridgeSettings, Tenant
 from .stt import SttConnect, make_openai_connect
 
 log = logging.getLogger(__name__)
@@ -39,6 +42,10 @@ MAX_FRAME_BYTES = 4000  # one media message; a 20 ms frame is 160 bytes
 START_TIMEOUT_S = 10.0
 JANITOR_S = 1.0
 PAGE_MODES = ("web", "room")  # modes served by browser pages (room: the You page only)
+SHARED_MODES = (*PAGE_MODES, "phone")  # what a workspace may start on the shared bridge
+MAX_API_BODY = 16384
+DAY_S = 86400.0
+_REF = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 def _headers(settings: BridgeSettings, nonce: str = "") -> dict[str, str]:
@@ -60,15 +67,23 @@ class Bridge:
 
     def __init__(self, settings: BridgeSettings, store: Store, *, client: OpenAIClient | None,
                  stt_connect: SttConnect | None, twilio: twilio_io.TwilioRest | None,
-                 clock: Callable[[], float]) -> None:
+                 clock: Callable[[], float], telnyx: telnyx_io.TelnyxRest | None = None) -> None:
         self.settings = settings
         self.store = store
         self.client = client
         self.stt_connect = stt_connect
         self.twilio = twilio
+        self.telnyx = telnyx
         self.clock = clock
         self.runtimes: dict[str, GhostRuntime] = {}
         self._dialing: set[str] = set()
+        # Shared bridge, memory only: a workspace's hint model key per session (never written to
+        # disk), the create response for an idempotent repeat, and command ids already taken.
+        self.hint_keys: dict[str, str] = {}
+        self.created: dict[str, dict] = {}
+        # shortcut: lost on restart, so a speak retried across a restart may play twice;
+        # persist in the commands table if that matters.
+        self.seen_commands: set[tuple[str, str]] = set()
 
     def runtime(self, sid: str) -> GhostRuntime | None:
         rt = self.runtimes.get(sid)
@@ -77,17 +92,29 @@ class Bridge:
         session = self.store.get_session(sid)
         if session is None or session["state"] not in ACTIVE_STATES:
             return None
+        hint_client: OpenAIClient | None | bool = True
+        if session.get("workspace"):  # hints bill the workspace's own key, never the bridge's
+            key = self.hint_keys.get(sid, "")
+            base = (session.get("config") or {}).get("hint_base_url") or DEFAULT_HINT_BASE_URL
+            hint_client = OpenAIClient(key, base_url=base) if key else None
         rt = GhostRuntime(sid, store=self.store, settings=self.settings, client=self.client,
                           stt_connect=self.stt_connect, twilio=self.twilio, clock=self.clock,
-                          on_finished=lambda s: None)
+                          on_finished=self.forget, hint_client=hint_client,
+                          telnyx=self.telnyx)
         self.runtimes[sid] = rt
         return rt
+
+    def forget(self, sid: str) -> None:
+        self.hint_keys.pop(sid, None)
+        self.created.pop(sid, None)
 
     async def settle_unattached(self, session: dict, reason: str) -> None:
         """End a session no runtime owns, and write its (transcript-free) summary once."""
         sid = session["id"]
         if not self.store.end_once(sid, reason):
             return
+        self.forget(sid)
+        await self.phone_hangup(session)
         fresh = self.store.get_session(sid) or session
         stats = {"duration_s": round(elapsed(fresh, self.clock()), 1),
                  "hint_count": self.store.hint_count(sid), "turn_count": 0, "end_reason": reason}
@@ -161,6 +188,87 @@ class Bridge:
         except Exception as exc:  # noqa: BLE001
             self.store.add_event(sid, "dial_failed", {"leg": "them", "code": str(exc)[:40]})
 
+    # -- phone mode on Telnyx ---------------------------------------------------------------
+    async def phone_hangup(self, session: dict) -> None:
+        if session.get("mode") != "phone" or self.telnyx is None:
+            return
+        provider = (self.store.get_session(session["id"]) or session).get("provider") or {}
+        for key in ("you_ccid", "them_ccid"):
+            if provider.get(key):
+                with contextlib.suppress(Exception):
+                    await self.telnyx.hangup(provider[key])
+
+    async def dial_phone(self, sid: str, leg: str) -> bool:
+        """Ring one leg. The bridge re-checks the number itself, whatever the plugin sent."""
+        session = self.store.get_session(sid)
+        if session is None or self.telnyx is None or session["state"] not in ACTIVE_STATES:
+            return False
+        provider = session.get("provider") or {}
+        if provider.get(f"{leg}_ccid"):
+            return True
+        check = safety.check_dialable(provider.get(f"{leg}_number", ""), self.settings.environ)
+        if not check.ok:
+            self.store.add_event(sid, "dial_refused", {"leg": leg, "reason": check.reason})
+            await self.settle_unattached(session, "dial_refused")
+            return False
+        try:
+            ccid = await self.telnyx.dial(
+                to=provider[f"{leg}_number"], from_=self.settings.caller_number,
+                webhook_url=f"{self.settings.public_base_url}/telnyx/webhook",
+                state=telnyx_io.client_state(sid, leg))
+        except Exception as exc:  # noqa: BLE001
+            self.store.add_event(sid, "dial_failed", {"leg": leg, "code": str(exc)[:40]})
+            await self.settle_unattached(session, "dial_failed")
+            return False
+        self.store.set_provider(sid, {f"{leg}_ccid": ccid})
+        self.store.add_event(sid, f"dialed_{leg}", {})
+        return True
+
+    async def on_phone_event(self, kind: str, payload: dict) -> None:
+        """One verified webhook. Replays are harmless: every step is guarded."""
+        state = telnyx_io.read_client_state(payload.get("client_state"))
+        sid, leg = state.get("sid"), state.get("leg")
+        session = self.store.get_session(sid) if isinstance(sid, str) and len(sid) <= 32 \
+            else None
+        if session is None or session["mode"] != "phone" or leg not in ROLES:
+            return
+        provider = session.get("provider") or {}
+        ccid = payload.get("call_control_id")
+        if not isinstance(ccid, str) or not ccid or ccid != provider.get(f"{leg}_ccid"):
+            return
+        if kind == "call.hangup":
+            rt = self.runtimes.get(sid)
+            if rt is not None and not rt.ended.is_set():
+                await rt.end(f"{leg}_hung_up")
+            elif session["state"] in ACTIVE_STATES:
+                await self.settle_unattached(session, f"{leg}_hung_up")
+            return
+        if session["state"] not in ACTIVE_STATES or self.telnyx is None:
+            return
+        try:
+            if kind == "call.answered" and leg == "you":
+                await self.dial_phone(sid, "them")
+            elif kind == "call.answered" and leg == "them" and \
+                    not provider.get("disclosure_started"):
+                self.store.set_provider(sid, {"disclosure_started": True})
+                await self.telnyx.speak(ccid, telnyx_io.DISCLOSURE,
+                                        state=telnyx_io.client_state(sid, "them", "disclosure"))
+                usage = session.get("usage") or {}
+                self.store.set_usage(sid, {**usage, "tts_chars": int(usage.get("tts_chars") or 0)
+                                           + len(telnyx_io.DISCLOSURE)})
+            elif kind == "call.speak.ended" and leg == "them" and \
+                    state.get("kind") == "disclosure" and self.store.mark_consent(sid):
+                # Only now does any audio leave the call: bridge the legs, then fork each one.
+                await self.telnyx.bridge(provider["you_ccid"], ccid)
+                for role in ROLES:
+                    token = self.store.mint_token(sid, role, "media", self.settings.media_ttl_s)
+                    await self.telnyx.stream(
+                        provider[f"{role}_ccid"],
+                        f"{self.settings.ws_base_url()}/telnyx/{sid}/media/{role}?t={token}")
+        except Exception as exc:  # noqa: BLE001
+            self.store.add_event(sid, "phone_failed", {"code": str(exc)[:40]})
+            await self.settle_unattached(session, "phone_failed")
+
     def _url(self, sid: str, kind: str, role: str) -> str:
         return f"{self.settings.public_base_url}/twilio/{sid}/{kind}/{role}"
 
@@ -176,7 +284,8 @@ class Bridge:
 def create_app(settings: BridgeSettings, *, store: Store | None = None,
                client: OpenAIClient | None | bool = True, stt_connect: SttConnect | None | bool
                = True, twilio: twilio_io.TwilioRest | None | bool = True,
-               clock: Callable[[], float] | None = None, janitor: bool = True) -> FastAPI:
+               clock: Callable[[], float] | None = None, janitor: bool = True,
+               telnyx: telnyx_io.TelnyxRest | None | bool = True) -> FastAPI:
     the_store = store if store is not None else Store(path=settings.db_path or None)
     the_clock = clock or the_store.clock
     if client is True:
@@ -187,8 +296,11 @@ def create_app(settings: BridgeSettings, *, store: Store | None = None,
     if twilio is True:
         twilio = twilio_io.TwilioRest(settings.twilio_account_sid, settings.twilio_auth_token) \
             if settings.twilio_ready() else None
+    if telnyx is True:
+        telnyx = telnyx_io.TelnyxRest(settings.telnyx_api_key, settings.telnyx_connection_id) \
+            if settings.phone_ready() else None
     bridge = Bridge(settings, the_store, client=client or None, stt_connect=stt_connect or None,
-                    twilio=twilio or None, clock=the_clock)
+                    twilio=twilio or None, clock=the_clock, telnyx=telnyx or None)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -417,7 +529,208 @@ def create_app(settings: BridgeSettings, *, store: Store | None = None,
             await rt.detach(role)
             await _close(ws, 1000)
 
+    _add_shared_routes(app, bridge)
     return app
+
+
+# ---- shared bridge: workspace API (docs/BRIDGE_API.md) and phone mode -----------------------
+def _err(status: int, code: str, message: str) -> JSONResponse:
+    return JSONResponse({"error": {"code": code, "message": message}}, status_code=status,
+                        headers={"Cache-Control": "no-store"})
+
+
+def _snapshot(store: Store, session: dict) -> dict:
+    return {"state": session["state"], "end_reason": session.get("end_reason") or None,
+            "consented": session.get("consent_at") is not None,
+            "usage": {"stt_seconds": 0.0, "tts_chars": 0, **(session.get("usage") or {})},
+            "summary": session.get("summary"), "hint_count": store.hint_count(session["id"])}
+
+
+def _add_shared_routes(app: FastAPI, bridge: Bridge) -> None:
+    settings, store = bridge.settings, bridge.store
+
+    def tenant_of(request: Request) -> Tenant | None:
+        auth = request.headers.get("authorization") or ""
+        if not auth.startswith("Bearer ") or len(auth) > 512:
+            return None
+        digest = hashlib.sha256(auth[7:].strip().encode("utf-8")).hexdigest()
+        return settings.tenants.get(digest)
+
+    async def body_of(request: Request) -> dict | None:
+        raw = await request.body()
+        if len(raw) > MAX_API_BODY:
+            return None
+        try:
+            data = json.loads(raw or b"{}")
+        except ValueError:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def owned(tenant: Tenant, ref: str) -> dict | None:
+        """A session of this workspace only; any other id reads as not found."""
+        return store.tenant_session(tenant.workspace, ref) if _REF.match(ref) else None
+
+    @app.get("/v1/health")
+    async def v1_health(request: Request) -> Response:
+        if tenant_of(request) is None:
+            return _err(401, "unauthorized", "bad workspace token")
+        return JSONResponse({"ok": True, "phone": bridge.telnyx is not None})
+
+    @app.put("/v1/sessions/{ref}")
+    async def v1_create(ref: str, request: Request) -> Response:
+        tenant = tenant_of(request)
+        if tenant is None:
+            return _err(401, "unauthorized", "bad workspace token")
+        if not _REF.match(ref):
+            return _err(422, "bad_id", "session id must match [A-Za-z0-9_-]{1,64}")
+        existing = owned(tenant, ref)
+        if existing is not None:
+            cached = bridge.created.get(existing["id"])
+            return JSONResponse(cached or {"session_id": ref, "state": existing["state"],
+                                           "mode": existing["mode"], "links": {}})
+        body = await body_of(request)
+        if body is None:
+            return _err(400, "bad_body", "body must be a JSON object")
+        mode = str(body.get("mode") or "web")
+        goal = " ".join(str(body.get("goal") or "").split())[:400]
+        if mode not in SHARED_MODES:
+            return _err(422, "bad_mode", "mode must be web, room or phone")
+        if not goal:
+            return _err(422, "goal_required", "a goal is required")
+        if mode == "phone" and bridge.telnyx is None:
+            return _err(422, "phone_unavailable", "phone mode is not available on this bridge")
+        if store.active_sessions(tenant.workspace):
+            return _err(422, "session_active", "another session is still active")
+        if store.sessions_since(bridge.clock() - DAY_S, tenant.workspace) >= \
+                tenant.daily_session_limit:
+            return _err(422, "daily_limit", "daily session limit reached")
+        raw_cfg = body.get("config") if isinstance(body.get("config"), dict) else {}
+        cfg = configmod.resolve(lambda key, _default: raw_cfg.get(key))  # clamped here too
+        hint = body.get("hint") if isinstance(body.get("hint"), dict) else {}
+        cfg.update(store_transcripts=False,  # transcripts stay in memory for the summary only
+                   model=str(hint.get("model") or tenant.hint_model or cfg["model"])[:120],
+                   hint_base_url=tenant.hint_base_url or DEFAULT_HINT_BASE_URL)
+        provider: dict[str, str] = {}
+        if mode == "phone":
+            numbers = body.get("numbers") if isinstance(body.get("numbers"), dict) else {}
+            for leg in ROLES:
+                check = safety.check_dialable(str(numbers.get(leg) or ""), settings.environ)
+                if not check.ok:
+                    return _err(422, "number_refused", f"the {leg} number was refused: "
+                                                       f"{check.reason}")
+                provider[f"{leg}_number"] = safety.validate_number(numbers[leg])[0] or ""
+        session = store.create_session(
+            goal=goal, callee_label=" ".join(str(body.get("callee_label") or "").split())[:80],
+            mode=mode, config=cfg, provider=provider, session_id="g" + secrets.token_hex(8),
+            workspace=tenant.workspace, client_ref=ref)
+        sid = session["id"]
+        key = hint.get("api_key")
+        if isinstance(key, str) and 0 < len(key) <= 512:
+            bridge.hint_keys[sid] = key
+        links: dict[str, str] = {}
+        if mode in PAGE_MODES:
+            for role in ("you",) if mode == "room" else ROLES:
+                tok = store.mint_token(sid, role, "link", settings.link_ttl_s)
+                links[role] = f"{settings.public_base_url}/g/{sid}/{role}?t={tok}"
+        elif not await bridge.dial_phone(sid, "you"):
+            return _err(502, "dial_failed", "the call could not be placed")
+        out = {"session_id": ref, "state": CREATED, "mode": mode, "links": links,
+               "expires_in": int(settings.link_ttl_s)}
+        bridge.created[sid] = out
+        return JSONResponse(out, status_code=201)
+
+    @app.get("/v1/sessions/{ref}/updates")
+    async def v1_updates(ref: str, request: Request, cursor: str = "") -> Response:
+        tenant = tenant_of(request)
+        if tenant is None:
+            return _err(401, "unauthorized", "bad workspace token")
+        session = owned(tenant, ref)
+        if session is None:
+            return _err(404, "not_found", "no such session")
+        after = int(cursor) if cursor.isdigit() and len(cursor) < 10 else 0
+        hints = [{"n": h["n"], "t": h["t"], "text": h["text"]}
+                 for h in store.hints(session["id"]) if h["n"] > after]
+        last = hints[-1]["n"] if hints else after
+        return JSONResponse({"cursor": str(last), "session": _snapshot(store, session),
+                             "hints": hints}, headers={"Cache-Control": "no-store"})
+
+    @app.put("/v1/sessions/{ref}/commands/{cmd_id}")
+    async def v1_command(ref: str, cmd_id: str, request: Request) -> Response:
+        tenant = tenant_of(request)
+        if tenant is None:
+            return _err(401, "unauthorized", "bad workspace token")
+        session = owned(tenant, ref)
+        if session is None or not _REF.match(cmd_id):
+            return _err(404, "not_found", "no such session")
+        body = await body_of(request) or {}
+        if body.get("kind") != "speak":  # intervene does not exist on the shared bridge
+            return _err(422, "bad_command", "only speak is accepted")
+        if (session["id"], cmd_id) in bridge.seen_commands:
+            return JSONResponse({"ok": True, "repeat": True})
+        if session["state"] != LIVE:
+            return _err(409, "not_live", "the session is not live")
+        n = body.get("n")
+        bridge.seen_commands.add((session["id"], cmd_id))
+        store.enqueue(session["id"], "speak", {"n": n if isinstance(n, int) else None})
+        return JSONResponse({"ok": True})
+
+    @app.post("/v1/sessions/{ref}/hangup")
+    async def v1_hangup(ref: str, request: Request) -> Response:
+        tenant = tenant_of(request)
+        if tenant is None:
+            return _err(401, "unauthorized", "bad workspace token")
+        session = owned(tenant, ref)
+        if session is None:
+            return _err(404, "not_found", "no such session")
+        if session["state"] != ENDED:
+            store.request_hangup(session["id"])
+            store.enqueue(session["id"], "hangup")
+        return JSONResponse({"ok": True, "state": session["state"]})
+
+    @app.post("/telnyx/webhook")
+    async def telnyx_webhook(request: Request) -> Response:
+        raw = await request.body()
+        if not settings.telnyx_public_key or not telnyx_io.verify(
+                settings.telnyx_public_key, raw, request.headers):
+            return PlainTextResponse("invalid signature", status_code=403)
+        try:
+            data = (json.loads(raw) or {}).get("data") or {}
+        except (ValueError, AttributeError):
+            return JSONResponse({"ok": True})
+        if isinstance(data, dict) and isinstance(data.get("payload"), dict):
+            await bridge.on_phone_event(str(data.get("event_type") or ""), data["payload"])
+        return JSONResponse({"ok": True})
+
+    @app.websocket("/telnyx/{sid}/media/{role}")
+    async def telnyx_media(ws: WebSocket, sid: str, role: str, t: str = "") -> None:
+        await ws.accept()
+        session = store.get_session(sid) if role in ROLES and len(sid) <= 32 else None
+        if (session is None or session["mode"] != "phone" or session["state"] not in
+                ACTIVE_STATES or session.get("consent_at") is None
+                or not store.consume_token(sid, role, "media", t)):
+            await _close(ws, 1008)
+            return
+        rt = bridge.runtime(sid)
+        if rt is None:
+            await _close(ws, 1008)
+            return
+        await rt.attach(role, None)  # receive-only
+        try:
+            while not rt.ended.is_set():
+                msg = _parse(await ws.receive_text())
+                if msg is None:
+                    continue
+                if msg.get("event") == "media":
+                    chunk = _b64((msg.get("media") or {}).get("payload"))
+                    if chunk:
+                        await rt.on_audio(role, chunk)
+                elif msg.get("event") == "stop":
+                    break
+        except (WebSocketDisconnect, RuntimeError):
+            pass
+        finally:
+            await rt.detach(role)
+            await _close(ws, 1000)
 
 
 # ---- helpers ------------------------------------------------------------------------------

@@ -212,6 +212,7 @@ APP_JS = r"""
       else if (m.event === 'caption') caption(m);
       else if (m.event === 'whisper') whisper(m);
       else if (m.event === 'notice') notice(m.text);
+      else if (m.event === 'consented') show('consent', false);
       else if (m.event === 'ended') finish('Call ended.');
     };
     ws.onerror = () => finish('Connection problem. The call ended.');
@@ -250,6 +251,9 @@ APP_JS = r"""
   }
   $('join').addEventListener('click', join);
   $('hang').addEventListener('click', () => { send({ event: 'stop' }); finish('You hung up.'); });
+  if ($('consent-ok')) $('consent-ok').addEventListener('click', () => {
+    send({ event: 'consent' }); show('consent', false);
+  });
   if ($('speak')) $('speak').addEventListener('click', () => send({ event: 'speak' }));
   if ($('hint')) $('hint').addEventListener('click', () => send({ event: 'hint' }));
   window.addEventListener('pagehide', () => { if (!over) send({ event: 'stop' }); });
@@ -297,6 +301,12 @@ label.mute { display:flex; gap:8px; align-items:center; font-size:14px; color:va
 """
 
 
+# Shown on the user's page in web and room mode. The bridge transcribes nothing until it is tapped.
+CONSENT_LINE = "Let the other person know this call is being transcribed."
+CONSENT = f"""<div id="consent" class="card"><p>{CONSENT_LINE}</p>
+    <button id="consent-ok" class="primary">I told them. Start transcribing</button></div>"""
+
+
 def _page(*, title: str, body_attrs: str, content: str, nonce: str) -> str:
     return ("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
             "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
@@ -325,6 +335,7 @@ silence while one plays, so {other} never hears Ghost.</div>
 <p id="status">Tap Join when you are ready.</p>
 <p id="notice" hidden></p>
 <div id="controls" hidden>
+  {CONSENT}
   <div class="card"><p id="latest"></p><p id="caption" class="caption"></p></div>
   <div class="row"><button id="speak">Speak hint</button><button id="hint">Hint</button></div>
   <label class="mute"><input type="checkbox" id="mute"> Mute my mic</label>
@@ -350,6 +361,7 @@ If you tap Speak hint, wear headphones on this device, or the phone will hear th
 <p id="status">Tap Start listening when the call begins.</p>
 <p id="notice" hidden></p>
 <div id="controls" hidden>
+  {CONSENT}
   <div class="card"><p id="latest"></p><p id="caption" class="caption"></p></div>
   <div class="row"><button id="speak">Speak hint</button><button id="hint">Hint</button></div>
   <label class="mute"><input type="checkbox" id="mute"> Pause listening</label>

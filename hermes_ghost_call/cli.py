@@ -10,6 +10,7 @@ from typing import Any
 
 from . import config as configmod
 from . import mode as modemod
+from . import remote as remotemod
 from . import safety
 from . import secrets as secretsmod
 
@@ -76,6 +77,12 @@ def run_checks(environ: Mapping[str, str], cfg: dict | None = None,
                 f"{cfg['max_hints_per_session']} hints, <= {cfg['max_duration_s']}s, "
                 f"{cfg['daily_session_limit']}/day, transcripts "
                 f"{'on' if cfg['store_transcripts'] else 'off'}"))
+    if remotemod.configured(environ):
+        hint_key = bool(str(environ.get(remotemod.HINT_KEY_ENV) or "").strip())
+        out.append(("shared bridge", hint_key,
+                    f"configured ({remotemod.URL_ENV}); hints need {remotemod.HINT_KEY_ENV}: "
+                    + ("set" if hint_key else "MISSING")))
+        return out
     base = str(environ.get("PUBLIC_BASE_URL") or "").strip().rstrip("/")
     if base:
         code = (http_get or _default_http_get)(f"{base}/healthz", 3.0)

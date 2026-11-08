@@ -115,6 +115,9 @@ class TickerWatcher:
         session = store.get_session(self.sid)
         if session is None:
             return True
+        remote = getattr(self.svc, "remote", None)
+        if remote is not None and (session.get("provider") or {}).get("remote"):
+            remote.sync(store, self.sid)
         self.svc.expire_stale()
         session = store.get_session(self.sid) or session
         state = session["state"]
