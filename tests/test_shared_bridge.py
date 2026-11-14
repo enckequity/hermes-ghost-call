@@ -947,3 +947,82 @@ def test_store_migrates_an_old_database(tmp_path):
     s = Store(path=path)
     assert s.get_session("g1")["usage"] == {} and s.get_session("g1")["workspace"] == ""
     s.close()
+
+
+# ---- one dial per leg, whatever the webhook replays do (teamshift#2110) ---------------------
+def _phone_session(c, store):
+    create(c, mode="phone", numbers={"you": "+12125550123", "them": "+13105550199"})
+    return store.tenant_session("ws-a", "loc1")["id"]
+
+
+def _dials(phone, leg):
+    return [x for x in phone.calls if x[:2] == ("dial", leg)]
+
+
+def test_sequential_answered_replays_dial_the_callee_once(app, store, phone):
+    with TestClient(app) as c:
+        sid = _phone_session(c, store)
+        for _ in range(3):
+            post_event(c, event("call.answered", sid, "you", "cc-you"))
+        assert len(_dials(phone, "them")) == 1
+        assert store.get_session(sid)["provider"]["them_ccid"] == "cc-them"
+
+
+async def test_concurrent_answered_replays_dial_once_while_the_carrier_yields(
+        store, settings, phone):
+    async def slow_dial(*, to, from_, webhook_url, state):
+        leg = telnyx_io.read_client_state(state)["leg"]
+        phone.calls.append(("dial", leg, to, from_))
+        await asyncio.sleep(0.05)
+        return f"cc-{leg}-{len(phone.calls)}"
+    phone.dial = slow_dial
+    s = store.create_session(goal="g", callee_label="x", mode="phone", workspace="ws-a",
+                             client_ref="r", config={}, provider={
+                                 "you_ccid": "cc-you", "them_number": "+13105550199"})
+    bridge = appmod.Bridge(settings, store, client=None, stt_connect=None, twilio=None,
+                           clock=time.monotonic, telnyx=phone)
+    out = await asyncio.gather(*(bridge.dial_phone(s["id"], "them") for _ in range(5)))
+    assert len(_dials(phone, "them")) == 1 and out.count(True) == 1
+    assert store.get_session(s["id"])["provider"]["them_ccid"].startswith("cc-them")
+
+
+def test_a_failed_dial_ends_the_session_and_is_never_redialed(app, store, phone):
+    async def boom(**kw):
+        phone.calls.append(("dial", telnyx_io.read_client_state(kw["state"])["leg"]))
+        raise RuntimeError("carrier 500")
+    with TestClient(app) as c:
+        sid = _phone_session(c, store)
+        phone.dial = boom
+        post_event(c, event("call.answered", sid, "you", "cc-you"))
+        post_event(c, event("call.answered", sid, "you", "cc-you"))
+        assert len(_dials(phone, "them")) == 1
+        s = store.get_session(sid)
+        assert s["state"] == ENDED and s["end_reason"] == "dial_failed"
+        assert s["provider"]["them_dial"] == "failed"
+        assert ("hangup", "cc-you") in phone.calls
+
+
+def test_an_uncertain_dial_keeps_its_claim(app, store, phone):
+    async def sent_then_lost(**kw):  # the request went out, the answer never came back
+        phone.calls.append(("dial", telnyx_io.read_client_state(kw["state"])["leg"]))
+        raise TimeoutError("read timeout")
+    with TestClient(app) as c:
+        sid = _phone_session(c, store)
+        phone.dial = sent_then_lost
+        post_event(c, event("call.answered", sid, "you", "cc-you"))
+        del phone.dial  # back to the class method
+        post_event(c, event("call.answered", sid, "you", "cc-you"))
+        assert len(_dials(phone, "them")) == 1
+        assert "them_ccid" not in store.get_session(sid)["provider"]
+
+
+def test_the_claim_survives_a_restart(settings, store, phone):
+    with TestClient(create_app(settings, store=store, client=None, stt_connect=None,
+                               twilio=None, telnyx=phone, janitor=False)) as c:
+        sid = _phone_session(c, store)
+        store.set_provider(sid, {"them_dial": "dialing"})  # crashed mid-dial
+    phone2 = FakeTelnyx()
+    with TestClient(create_app(settings, store=store, client=None, stt_connect=None,
+                               twilio=None, telnyx=phone2, janitor=False)) as c:
+        post_event(c, event("call.answered", sid, "you", "cc-you"))
+        assert _dials(phone2, "them") == []

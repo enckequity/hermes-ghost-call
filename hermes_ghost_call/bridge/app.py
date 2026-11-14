@@ -215,22 +215,37 @@ class Bridge:
         provider = session.get("provider") or {}
         if provider.get(f"{leg}_ccid"):
             return True
+        if provider.get(f"{leg}_dial"):
+            return False  # already claimed: dialing, failed or uncertain; never dial twice
         check = safety.check_dialable(provider.get(f"{leg}_number", ""), self.settings.environ)
         if not check.ok:
             self.store.add_event(sid, "dial_refused", {"leg": leg, "reason": check.reason})
             await self.settle_unattached(session, "dial_refused")
             return False
+        # Claim the leg before the carrier await (no await since the read above, so this is
+        # atomic on the event loop) and persist it, so replays and restarts cannot redial.
+        self.store.set_provider(sid, {f"{leg}_dial": "dialing"})
         try:
             ccid = await self.telnyx.dial(
                 to=provider[f"{leg}_number"], from_=self.settings.caller_number,
                 webhook_url=f"{self.settings.public_base_url}/telnyx/webhook",
                 state=telnyx_io.client_state(sid, leg))
+            if not ccid:
+                raise RuntimeError("no_call_control_id")
         except Exception as exc:  # noqa: BLE001
+            # The claim stays (the send may have happened), so nothing redials this leg.
+            self.store.set_provider(sid, {f"{leg}_dial": "failed"})
             self.store.add_event(sid, "dial_failed", {"leg": leg, "code": str(exc)[:40]})
             await self.settle_unattached(session, "dial_failed")
             return False
-        self.store.set_provider(sid, {f"{leg}_ccid": ccid})
+        self.store.set_provider(sid, {f"{leg}_ccid": ccid, f"{leg}_dial": "dialed"})
         self.store.add_event(sid, f"dialed_{leg}", {})
+        current = self.store.get_session(sid)
+        if current is None or current["state"] not in ACTIVE_STATES:
+            # The session ended while the carrier call was in flight: do not leave it ringing.
+            with contextlib.suppress(Exception):
+                await self.telnyx.hangup(ccid)
+            return False
         return True
 
     async def on_phone_event(self, kind: str, payload: dict) -> None:
